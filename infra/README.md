@@ -12,7 +12,7 @@ WebSockets work without CORS. Config lives in `apps/api/wrangler.jsonc`.
 | staging     | `pokr-staging`    | `deploy.yml` on every push to `main`                 | `env.staging`    |
 | production  | `pokr-production` | `deploy.yml` via `workflow_dispatch`, needs approval | `env.production` |
 
-Wrangler does not inherit `durable_objects`, `migrations` or `vars` into environments, so they are
+Wrangler does not inherit `durable_objects`, `migrations`, `ratelimits` or `vars` into environments, so they are
 repeated in each block. When you add a binding or migration, add it to all three.
 
 Durable Object migrations: `v1` creates `RoomDurableObject` as a SQLite-backed class. Any class
@@ -67,3 +67,12 @@ Never commit secrets or print them in logs. Local secrets go in `apps/api/.dev.v
    the GitHub Actions tab (Deploy > Run workflow).
 7. **Branch protection** on `main`: require the `verify` and `e2e` CI jobs.
 8. **Local browsers**: `pnpm --filter @pokr/e2e exec playwright install` for firefox/webkit.
+
+## Rate limiting and test mode
+
+- `RATE_LIMIT_CREATE` (5 / 60 s) and `RATE_LIMIT_JOIN` (30 / 60 s) are Workers Rate Limiting bindings
+  (`ratelimits` key, needs wrangler >= 4.36). Namespace IDs: dev 1001/1002, staging 2001/2002,
+  production 3001/3002 (distinct per binding and per environment). Counters are per Cloudflare
+  location, so limits are approximate; locally they are in-memory per `wrangler dev` session.
+- `POKR_TEST_MODE` is passed only via `wrangler dev --var POKR_TEST_MODE:true` (used by e2e). It must
+  never be declared in `wrangler.jsonc` (top level or any env) nor set on a deployed Worker.
