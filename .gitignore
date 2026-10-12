@@ -1,0 +1,16 @@
+# dependencies and build output
+node_modules/
+dist/
+.angular/
+
+# Cloudflare local state and secrets
+.wrangler/
+.dev.vars*
+.env*
+
+# Claude Code personal settings (shared config in .claude/ is committed)
+.claude/settings.local.json
+
+# OS / editor
+.DS_Store
+.idea/
