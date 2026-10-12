@@ -43,7 +43,7 @@ Deck values:
 - **Modified Fibonacci**: 0, ½, 1, 2, 3, 5, 8, 13, 20, 40, 100, ?, ☕
 - **T-shirt**: XS, S, M, L, XL, XXL, ?, ☕
 - **Powers of 2**: 0, 1, 2, 4, 8, 16, 32, 64, ?, ☕
-- **Custom**: up to 20 cards, each max 4 characters. `?` and `☕` are added automatically.
+- **Custom**: 1–20 unique cards, each 1–4 characters. `?` and `☕` are added automatically ([F01-AC34](01-rooms-and-voting.md)).
 
 Changing the deck while a round has votes resets that round (with confirmation).
 
@@ -85,10 +85,10 @@ Each feature ends with `/retro <feature>`.
 
 - **Real-time**: WebSockets on one Durable Object per room ([ADR 0001](../decisions/0001-realtime-transport.md)).
   A vote or reveal is visible to other participants within 500 ms (p95) under normal network
-  conditions.
+  conditions (≤ 100 ms round-trip time, measured from server receive to client render on staging).
 - **Room size**: up to 50 participants (observers included). Typical: 5–15.
 - **Devices**: mobile-first, responsive. Many people vote from their phone during a call.
-- **Browsers**: last two versions of Chrome, Edge, Firefox, Safari (macOS and iOS).
+- **Browsers**: last two versions of Chrome, Edge, Firefox, Safari (macOS and iOS). Automated tests run Chromium, Firefox, WebKit and iPhone emulation; Edge and real iOS devices get a manual smoke test per release.
 - **Accessibility**: WCAG 2.2 AA. Voting fully keyboard-operable; reveal announced to screen
   readers; color is never the only signal.
 - **Language**: English UI in v1; all strings externalized so translations can be added.
@@ -99,7 +99,7 @@ Each feature ends with `/retro <feature>`.
   - Room IDs are unguessable (≥ 80 bits of entropy); the link is the access control.
   - All input is length-limited and validated server-side.
   - Tracker content is rendered as sanitized text/Markdown, never raw HTML.
-  - Rate limits on room creation, joins, and messages per connection.
+  - Rate limits on room creation, joins, and messages per connection (numbers in [F01-AC37](01-rooms-and-voting.md)).
   - Tracker tokens encrypted at rest; never sent to the browser.
 - **Cost**: a typical team's usage stays within Cloudflare's paid-plan included quotas.
   Idle rooms hibernate.
