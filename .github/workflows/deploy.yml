@@ -1,8 +1,10 @@
 name: Deploy
 
 on:
-  # Staging: automatically on every push to main.
-  push:
+  # Staging: after the CI workflow completes for a push to main (gated on success below).
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
     branches: [main]
   # Production: manual run. The `production` GitHub environment must have required reviewers.
   workflow_dispatch:
@@ -16,26 +18,53 @@ on:
 permissions:
   contents: read
 
+# Separate queues per environment; never cancel an in-flight deploy.
 concurrency:
   group: deploy-${{ github.event_name == 'workflow_dispatch' && 'production' || 'staging' }}
   cancel-in-progress: false
 
 jobs:
   deploy-staging:
-    if: github.event_name == 'push'
+    # Only deploy a commit that passed CI on a push to main.
+    if: >-
+      github.event_name == 'workflow_run' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main'
     runs-on: ubuntu-latest
     environment: staging
     timeout-minutes: 15
     steps:
+      - name: Check Cloudflare secrets
+        id: secrets
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          if [ -n "$CLOUDFLARE_API_TOKEN" ] && [ -n "$CLOUDFLARE_ACCOUNT_ID" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Cloudflare secrets not configured; skipping deploy, see infra/README.md"
+            echo "Cloudflare secrets not configured; skipping deploy, see infra/README.md" >> "$GITHUB_STEP_SUMMARY"
+          fi
       - uses: actions/checkout@v7
+        if: steps.secrets.outputs.configured == 'true'
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
       - uses: pnpm/action-setup@v6
+        if: steps.secrets.outputs.configured == 'true'
       - uses: actions/setup-node@v7
+        if: steps.secrets.outputs.configured == 'true'
         with:
           node-version: 24
           cache: pnpm
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm --filter @pokr/web build
+      - if: steps.secrets.outputs.configured == 'true'
+        run: pnpm install --frozen-lockfile
+      - if: steps.secrets.outputs.configured == 'true'
+        run: pnpm --filter @pokr/web build
       - name: Deploy to staging
+        if: steps.secrets.outputs.configured == 'true'
         working-directory: apps/api
         run: pnpm exec wrangler deploy --env staging
         env:
@@ -47,16 +76,50 @@ jobs:
     runs-on: ubuntu-latest
     environment: production # required reviewers configured in repo settings
     timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: read # to look up the CI result for this commit
     steps:
+      - name: Check Cloudflare secrets
+        id: secrets
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          if [ -n "$CLOUDFLARE_API_TOKEN" ] && [ -n "$CLOUDFLARE_ACCOUNT_ID" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Cloudflare secrets not configured; skipping deploy, see infra/README.md"
+            echo "Cloudflare secrets not configured; skipping deploy, see infra/README.md" >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Require a green CI run for this commit
+        if: steps.secrets.outputs.configured == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.sha }}
+        run: |
+          ok=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml --commit "$SHA" \
+            --status success --json conclusion --jq 'length')
+          if [ "${ok:-0}" -lt 1 ]; then
+            echo "::error::No successful CI run found for $SHA. Run this workflow on a commit that passed CI."
+            exit 1
+          fi
       - uses: actions/checkout@v7
+        if: steps.secrets.outputs.configured == 'true'
       - uses: pnpm/action-setup@v6
+        if: steps.secrets.outputs.configured == 'true'
       - uses: actions/setup-node@v7
+        if: steps.secrets.outputs.configured == 'true'
         with:
           node-version: 24
           cache: pnpm
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm --filter @pokr/web build
+      - if: steps.secrets.outputs.configured == 'true'
+        run: pnpm install --frozen-lockfile
+      - if: steps.secrets.outputs.configured == 'true'
+        run: pnpm --filter @pokr/web build
       - name: Deploy to production
+        if: steps.secrets.outputs.configured == 'true'
         working-directory: apps/api
         run: pnpm exec wrangler deploy --env production
         env:

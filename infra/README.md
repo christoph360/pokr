@@ -9,8 +9,21 @@ WebSockets work without CORS. Config lives in `apps/api/wrangler.jsonc`.
 | Environment | Worker name       | Deployed by                                          | Config           |
 | ----------- | ----------------- | ---------------------------------------------------- | ---------------- |
 | dev         | `pokr-dev`        | local `wrangler dev` (never deployed by CI)          | top level        |
-| staging     | `pokr-staging`    | `deploy.yml` on every push to `main`                 | `env.staging`    |
+| staging     | `pokr-staging`    | `deploy.yml` after CI passes on `main`               | `env.staging`    |
 | production  | `pokr-production` | `deploy.yml` via `workflow_dispatch`, needs approval | `env.production` |
+
+## Deploy flow (`.github/workflows/deploy.yml`)
+
+- **Staging**: triggered by `workflow_run` when the `CI` workflow completes on `main`. It runs only if
+  CI concluded `success` for a `push` event, and deploys exactly the commit CI tested
+  (`workflow_run.head_sha`), not the current tip of `main`. Failed CI means no deploy.
+- **Production**: manual (Actions > Deploy > Run workflow), gated by the `production` environment's
+  required reviewers. Before building, a step verifies via `gh run list` that `ci.yml` has a
+  successful run for the selected commit and fails otherwise. Run it on a green commit.
+- **Missing secrets**: both jobs first check that `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`
+  exist. If not, the job succeeds, skips all remaining steps, and writes a notice and run summary
+  ("Cloudflare secrets not configured; skipping deploy"). Add the secrets (see below) to enable deploys.
+- **Concurrency**: one staging deploy and one production deploy at a time; queued, never cancelled.
 
 Wrangler does not inherit `durable_objects`, `migrations`, `ratelimits` or `vars` into environments, so they are
 repeated in each block. When you add a binding or migration, add it to all three.
@@ -63,7 +76,7 @@ Never commit secrets or print them in logs. Local secrets go in `apps/api/.dev.v
 5. **Workers subdomain**: first deploy needs a `workers.dev` subdomain registered on the account
    (the dashboard prompts for it). Custom domains/DNS are not configured yet; add `routes` to the
    env blocks when a domain exists.
-6. **First deploy**: the first staging deploy runs when this lands on `main`. Production is run from
+6. **First deploy**: once the secrets exist, the next green CI run on `main` deploys staging (re-run the Deploy workflow from the Actions tab to deploy an earlier run). Production is run from
    the GitHub Actions tab (Deploy > Run workflow).
 7. **Branch protection** on `main`: require the `verify` and `e2e` CI jobs.
 8. **Local browsers**: `pnpm --filter @pokr/e2e exec playwright install` for firefox/webkit.
