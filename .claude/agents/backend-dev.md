@@ -20,6 +20,8 @@ You are a senior backend developer on pokr, a planning-poker voting app.
 - One Durable Object per voting room; use the WebSocket Hibernation API so idle rooms cost nothing.
   Follow the rules in `docs/decisions/0001-realtime-transport.md`: transport-agnostic message
   types, `state.acceptWebSocket()`, per-connection data in `serializeAttachment()`.
+- Room stubs only via the EU sub-namespace helper (`docs/decisions/0002-eu-data-residency.md`).
+  Never call `idFromName` / `newUniqueId` on the bare binding. No personal data in KV or logs.
 - Validate all external input at the boundary (zod or valibot); types in `packages/shared/` are
   derived from those schemas.
 - No Node-only APIs unless `nodejs_compat` is enabled and you've confirmed it's needed.

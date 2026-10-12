@@ -1,6 +1,8 @@
 # pokr
 
-Planning-poker style voting app. Specs live in `docs/specs/` (not written yet).
+Planning-poker style voting app. Start with `docs/specs/00-product-overview.md`; each feature
+has its own spec in `docs/specs/`. Acceptance criteria have IDs (e.g. `F01-AC11`). Reference
+them in test names so coverage is traceable.
 
 ## Team
 
@@ -35,6 +37,8 @@ accepted decision unless one of its "Revisit when" triggers has happened; if one
 and suggest a new ADR.
 
 - 0001: real-time transport is WebSockets on Durable Objects with the Hibernation API.
+- 0002: all personal data is stored in the EU jurisdiction (Durable Objects, D1, R2); KV never
+  holds personal data; logs contain IDs, not personal data.
 
 ## Feature workflow
 
