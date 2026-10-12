@@ -11,6 +11,8 @@ Run a retrospective for the feature: $ARGUMENTS
 - What each agent was asked to do and what it handed back (from this conversation).
 - Rework: where the orchestrator or the user had to correct an agent, retries, failed tests,
   contract mismatches between frontend and backend, boundary violations.
+- The QA report in `docs/qa/<feature>-report.md`: defects found, which agent's work they
+  came from, and defects that slipped past QA (found later by the user).
 - `git log` / `git diff` for the feature if the repo has history.
 
 ## 2. Ask the user
@@ -27,7 +29,7 @@ Create `docs/retros/YYYY-MM-DD-<feature>.md`:
 Did it meet the acceptance criteria? What shipped, what didn't.
 
 ## Per agent
-### frontend-dev / backend-dev / devops-engineer / orchestrator
+### frontend-dev / backend-dev / devops-engineer / qa-engineer / orchestrator
 - Went well:
 - Went wrong (with concrete example):
 - Root cause: missing instruction | wrong instruction | missing tool | unclear handoff | other
