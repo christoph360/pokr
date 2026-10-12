@@ -1,3 +1,14 @@
-// Shared contract between @pokr/web and @pokr/api.
-// Placeholder only; backend-dev defines the real message types (see ADR 0001).
-export const SHARED_PLACEHOLDER = 'pokr-shared' as const;
+// @pokr/shared: the contract between @pokr/web and @pokr/api (see README.md).
+export * from './constants';
+export * from './text';
+export * from './deck';
+export * from './settings';
+export * from './room-id';
+export * from './summary';
+export * from './voting';
+export * from './permissions';
+export * from './backoff';
+export * from './errors';
+export * from './state';
+export * from './http';
+export * from './ws';
