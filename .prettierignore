@@ -1,0 +1,11 @@
+node_modules/
+dist/
+.angular/
+.wrangler/
+pnpm-lock.yaml
+playwright-report/
+test-results/
+worker-configuration.d.ts
+docs/
+.claude/
+CLAUDE.md

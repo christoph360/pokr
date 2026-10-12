@@ -14,3 +14,9 @@ dist/
 # OS / editor
 .DS_Store
 .idea/
+
+# Test output
+playwright-report/
+test-results/
+coverage/
+worker-configuration.d.ts

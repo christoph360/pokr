@@ -1,0 +1,17 @@
+{
+  "name": "@pokr/e2e",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "playwright test",
+    "test:ui": "playwright test --ui",
+    "report": "playwright show-report",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "devDependencies": {
+    "@playwright/test": "~1.61.1",
+    "@types/node": "^24.0.0",
+    "typescript": "~6.0.3"
+  }
+}

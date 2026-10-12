@@ -1,0 +1,56 @@
+// Top-level config = dev (wrangler dev / local). Environments `staging` and `production`
+// are deployed with `wrangler deploy --env <name>`.
+// Wrangler does NOT inherit `durable_objects`, `migrations` or `vars` into environments,
+// so those are repeated per environment. Keep all three blocks in sync.
+// Data residency (ADR 0002): D1/R2 resources added later must be created with
+// `--jurisdiction eu`; room stubs must come from env.ROOM.jurisdiction("eu").
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "pokr-dev",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-12",
+  "observability": { "enabled": true, "logs": { "enabled": true, "invocation_logs": true } },
+
+  // One Worker serves the API and the Angular SPA (same origin: cookies and WebSockets, no CORS).
+  // Only /api/* runs the Worker first; everything else is served from static assets, with SPA
+  // fallback to index.html. Build web first (`pnpm build` orders this).
+  "assets": {
+    "directory": "../web/dist/web/browser",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/api/*"],
+  },
+
+  "durable_objects": {
+    "bindings": [{ "name": "ROOM", "class_name": "RoomDurableObject" }],
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["RoomDurableObject"] }],
+
+  "env": {
+    "staging": {
+      "name": "pokr-staging",
+      "observability": { "enabled": true, "logs": { "enabled": true, "invocation_logs": true } },
+      "assets": {
+        "directory": "../web/dist/web/browser",
+        "not_found_handling": "single-page-application",
+        "run_worker_first": ["/api/*"],
+      },
+      "durable_objects": {
+        "bindings": [{ "name": "ROOM", "class_name": "RoomDurableObject" }],
+      },
+      "migrations": [{ "tag": "v1", "new_sqlite_classes": ["RoomDurableObject"] }],
+    },
+    "production": {
+      "name": "pokr-production",
+      "observability": { "enabled": true, "logs": { "enabled": true, "invocation_logs": true } },
+      "assets": {
+        "directory": "../web/dist/web/browser",
+        "not_found_handling": "single-page-application",
+        "run_worker_first": ["/api/*"],
+      },
+      "durable_objects": {
+        "bindings": [{ "name": "ROOM", "class_name": "RoomDurableObject" }],
+      },
+      "migrations": [{ "tag": "v1", "new_sqlite_classes": ["RoomDurableObject"] }],
+    },
+  },
+}
