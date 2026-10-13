@@ -61,13 +61,26 @@ export interface CreateOptions {
   timers?: TestTimersRequest;
 }
 
+/**
+ * A per-worker browser that is relaunched every few tests. Playwright's WebKit build (26.5, v2311)
+ * hangs in `goto` after about 63 contexts in one browser process (reproduced with a bare
+ * newContext/goto/close loop, no app involved), which broke the second half of every CI webkit run.
+ * Context counts are kept far below that.
+ */
+export interface BrowserPool {
+  browser: Browser;
+  used: number;
+  relaunch(): Promise<void>;
+}
+const MAX_CONTEXTS_PER_BROWSER = 30;
+
 export class World {
   private contexts: BrowserContext[] = [];
   private raws: RawClient[] = [];
   readonly api: ApiClient;
 
   constructor(
-    private readonly browser: Browser,
+    private readonly pool: BrowserPool,
     private readonly ctxOptions: Record<string, unknown>,
     api: ApiClient,
   ) {
@@ -98,7 +111,8 @@ export class World {
     config?: Partial<PokrTestConfig>,
   ): Promise<BrowserContext> {
     const ctxKey = uniqueKey('ui');
-    const context = await this.browser.newContext({
+    this.pool.used += 1;
+    const context = await this.pool.browser.newContext({
       ...this.ctxOptions,
       baseURL: WEB_URL,
       ...extra,
@@ -204,11 +218,30 @@ export async function fillJoinForm(page: Page, name: string, role: Role): Promis
   await page.getByTestId('join-submit').click();
 }
 
-export const test = base.extend<{ world: World }>({
+export const test = base.extend<{ world: World }, { browserPool: BrowserPool }>({
+  browserPool: [
+    async ({ playwright, browserName, launchOptions, headless }, use) => {
+      const browserType = playwright[browserName];
+      const options = { ...launchOptions, headless };
+      const pool: BrowserPool = {
+        browser: await browserType.launch(options),
+        used: 0,
+        async relaunch() {
+          await this.browser.close().catch(() => undefined);
+          this.browser = await browserType.launch(options);
+          this.used = 0;
+        },
+      };
+      await use(pool);
+      await pool.browser.close().catch(() => undefined);
+    },
+    { scope: 'worker' },
+  ],
   world: async (
-    { browser, playwright, viewport, userAgent, isMobile, hasTouch, deviceScaleFactor },
+    { browserPool, playwright, viewport, userAgent, isMobile, hasTouch, deviceScaleFactor },
     use,
   ) => {
+    if (browserPool.used >= MAX_CONTEXTS_PER_BROWSER) await browserPool.relaunch();
     const request = await playwright.request.newContext();
     const api = new ApiClient(request, uniqueKey('api'));
     const ctxOptions: Record<string, unknown> = {
@@ -218,7 +251,7 @@ export const test = base.extend<{ world: World }>({
       ...(hasTouch ? { hasTouch } : {}),
       ...(deviceScaleFactor !== undefined ? { deviceScaleFactor } : {}),
     };
-    const world = new World(browser, ctxOptions, api);
+    const world = new World(browserPool, ctxOptions, api);
     await use(world);
     await world.dispose();
     await request.dispose();

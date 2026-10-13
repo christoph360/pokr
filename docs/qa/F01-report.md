@@ -11,6 +11,22 @@ Three consecutive full runs on chromium, webkit and mobile-chrome were green (`r
 apps/api and apps/web frozen, no test edits between runs). All product defects found are fixed and verified (D2, D3).
 Remaining before release: Firefox in CI (cannot launch on this machine), the staging checks and manual items listed below.
 
+## CI result for 8b911ca and triage
+
+First CI run (per-project matrix): firefox and mobile-chrome passed; chromium 1 failure, webkit 5 failures (error text not readable without GitHub auth).
+
+| CI failure | Project | Triage |
+| --- | --- | --- |
+| a11y "join prompt, room..." , a11y "arrow keys move between cards", create-join "a voter joins with a 1-char and a 30-char name", create-join "joining as observer", vote "no vote value reaches any other client" (AC11) | webkit | **Test infrastructure bug T7 (fixed), not a product defect.** Playwright's WebKit build (26.5, v2311) hangs in `page.goto` after about 63 browser contexts in one browser process. Reproduced with a bare newContext/goto/close loop against the dev server (hang at context 63, then the browser dies). A worker reuses one browser for all its tests, so with 2 workers (CI) each worker hits the limit mid-run, once per worker, and the unlucky test times out at 30 s; with 4 workers and three projects locally the limit was never reached. Local CI-like repro (`webkit`, 2 workers) failed 2 tests per run, always the first tests after about 30 tests per worker, in 5 of 5 runs. Fix: `fixtures/index.ts` now gives each worker a browser that is relaunched after 30 contexts (`BrowserPool`). Webkit with 2 workers then passed. |
+| create-join "joining as observer shows no cards..." | chromium | **Not reproduced.** CI-like runs (`CI=1`, fresh servers, 2 workers, also with the Angular vite dependency cache removed to simulate a cold runner): full chromium green twice; the test and the 1-char/30-char test repeated 40 times each: 80 of 80 green. Best hypothesis: a cold dev server on the GitHub runner reloading or delaying the join form (the same test failed on webkit); unproven. If it recurs, the Playwright report trace will show it. No product defect found. |
+
+Findings about CI visibility (for devops-engineer):
+- With the `github` reporter alone, failures appear only as annotations in the run summary; the job log has no error text. `e2e/playwright.config.ts` now also uses the `list` reporter on CI so the job log prints each failing test with its error. No change is needed to paths or working directory for that.
+- The `playwright-report-<project>` artifact (HTML report with traces for failures) needs a token to download. Consider `--reporter=list,github,html` plus `if: always()` on the upload step (already present if it uses `always()`), and a `json` reporter output uploaded as a plain artifact if needed.
+- Chromium is not installed in the webkit/firefox jobs (`playwright install ${{ matrix.browser }}`), so a global warm-up of the dev server using Chromium would not work there; I did not add one.
+
+Verification after the fixes, CI conditions (`CI=1`, fresh `wrangler dev --var POKR_TEST_MODE:1` and `ng serve` started by Playwright, 2 workers), three consecutive full runs on chromium, webkit and mobile-chrome: **all green** (178 + 60 + 61 passed, 1 + 1 skipped by design, 0 failed in each run). Webkit alone with 2 workers, which failed 5 of 5 before the fix, is also green.
+
 ## Results
 
 Final runs (X1 to X3). chromium 179 tests (1 skip by design), webkit 61 (1 skip), mobile-chrome 61:
@@ -34,6 +50,8 @@ Runs on the way to this (test or product fixes between them):
 | W1, W2 | green; W3 1 fail | join-rate test (T6, below), not a product failure |
 
 ## Fixed on the way
+
+- T7: WebKit browser context limit (see CI triage above).
 
 - T6: the joins-per-minute test counted any socket error as "limited" and, as a 130-attempt burst, could straddle a fixed rate-limit window.
   It now uses `probeUpgrade` (plain HTTP upgrade handshake, reads the real status 101/429) with 2 x limit + 20 attempts in batches of 20.

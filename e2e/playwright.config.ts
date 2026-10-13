@@ -36,7 +36,8 @@ export default defineConfig({
   retries: 0, // flaky tests are defects, never retried until green
   workers: isCI ? 2 : 4,
   reporter: isCI
-    ? [['html', { open: 'never' }], ['github']]
+    ? // `list` prints every failure with its error in the job log; `github` alone only annotates.
+      [['list'], ['html', { open: 'never' }], ['github']]
     : [['list'], ['html', { open: 'never' }]],
   use: {
     // The Angular dev server proxies /api (incl. WebSocket upgrades) to wrangler dev.
