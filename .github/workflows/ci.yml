@@ -31,9 +31,23 @@ jobs:
       - run: pnpm build
 
   e2e:
+    name: e2e (${{ matrix.project }})
     runs-on: ubuntu-latest
     needs: verify
     timeout-minutes: 30
+    strategy:
+      fail-fast: false # a failure in one browser must not cancel the others
+      matrix:
+        include:
+          # project = Playwright project name in e2e/playwright.config.ts; browser = engine to install
+          - project: chromium
+            browser: chromium
+          - project: firefox
+            browser: firefox
+          - project: webkit
+            browser: webkit
+          - project: mobile-chrome
+            browser: chromium
     steps:
       - uses: actions/checkout@v7
       - uses: pnpm/action-setup@v6
@@ -42,14 +56,14 @@ jobs:
           node-version: 24
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - name: Install Playwright browsers
-        run: pnpm --filter @pokr/e2e exec playwright install --with-deps
-      - name: Run Playwright e2e
-        run: pnpm --filter @pokr/e2e test
+      - name: Install Playwright browser
+        run: pnpm --filter @pokr/e2e exec playwright install --with-deps ${{ matrix.browser }}
+      - name: Run Playwright e2e (${{ matrix.project }})
+        run: pnpm --filter @pokr/e2e test --project=${{ matrix.project }}
       - name: Upload Playwright report
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v7
         with:
-          name: playwright-report
+          name: playwright-report-${{ matrix.project }}
           path: e2e/playwright-report/
           retention-days: 14

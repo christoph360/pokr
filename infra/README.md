@@ -78,7 +78,7 @@ Never commit secrets or print them in logs. Local secrets go in `apps/api/.dev.v
    env blocks when a domain exists.
 6. **First deploy**: once the secrets exist, the next green CI run on `main` deploys staging (re-run the Deploy workflow from the Actions tab to deploy an earlier run). Production is run from
    the GitHub Actions tab (Deploy > Run workflow).
-7. **Branch protection** on `main`: require the `verify` and `e2e` CI jobs.
+7. **Branch protection** on `main`: require the `verify` job and the four `e2e (chromium|firefox|webkit|mobile-chrome)` matrix jobs (one per Playwright project, each uploading `playwright-report-<project>`).
 8. **Local browsers**: `pnpm --filter @pokr/e2e exec playwright install` for firefox/webkit.
 
 ## Rate limiting and test mode
@@ -87,5 +87,18 @@ Never commit secrets or print them in logs. Local secrets go in `apps/api/.dev.v
   (`ratelimits` key, needs wrangler >= 4.36). Namespace IDs: dev 1001/1002, staging 2001/2002,
   production 3001/3002 (distinct per binding and per environment). Counters are per Cloudflare
   location, so limits are approximate; locally they are in-memory per `wrangler dev` session.
-- `POKR_TEST_MODE` is passed only via `wrangler dev --var POKR_TEST_MODE:true` (used by e2e). It must
+- `POKR_TEST_MODE` is passed only via `wrangler dev --var POKR_TEST_MODE:1` (used by e2e). It must
   never be declared in `wrangler.jsonc` (top level or any env) nor set on a deployed Worker.
+
+## Staging checks
+
+Things workerd cannot show locally, to verify on staging after a deploy. The AC31 jurisdiction and
+join-timeout checks are listed in `docs/qa/F01-report.md`.
+
+- **SQLite contention under load**: local `wrangler dev` (workerd) can raise transient
+  `SQLITE_BUSY: database is locked` from Durable Object SQLite under many concurrent connections
+  (about 1 to 5 per 1000 joins/votes in a 40-room stress run). The room retries these (5/15/40/100 ms)
+  and logs `storage_busy_retry` (count only). On staging, run a concurrent join/vote burst against one
+  room and confirm there are no `internal_error` replies and no `storage_busy_retry` or
+  `reschedule_failed` events. If staging shows them, the cause is the platform, not local-only, and
+  needs a Cloudflare support ticket.
