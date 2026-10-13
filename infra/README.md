@@ -83,7 +83,7 @@ Never commit secrets or print them in logs. Local secrets go in `apps/api/.dev.v
 
 ## Rate limiting and test mode
 
-- `RATE_LIMIT_CREATE` (5 / 60 s) and `RATE_LIMIT_JOIN` (30 / 60 s) are Workers Rate Limiting bindings
+- `RATE_LIMIT_CREATE` (5 / 60 s) and `RATE_LIMIT_JOIN` (120 / 60 s, office networks share one IP) are Workers Rate Limiting bindings
   (`ratelimits` key, needs wrangler >= 4.36). Namespace IDs: dev 1001/1002, staging 2001/2002,
   production 3001/3002 (distinct per binding and per environment). Counters are per Cloudflare
   location, so limits are approximate; locally they are in-memory per `wrangler dev` session.

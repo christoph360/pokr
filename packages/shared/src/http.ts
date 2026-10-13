@@ -9,9 +9,9 @@ export const API_PATHS = {
   /** WebSocket upgrade (GET with `Upgrade: websocket`). The token is NOT in the URL; see ws.ts. */
   roomSocket: (roomId: string) => `/api/rooms/${roomId}/ws`,
   /** Test mode only; 404 everywhere else. */
-  testTimers: (roomId: string) => `/__test/rooms/${roomId}/timers`,
-  testEvict: (roomId: string) => `/__test/rooms/${roomId}/evict`,
-  testInstance: (roomId: string) => `/__test/rooms/${roomId}/instance`,
+  testTimers: (roomId: string) => `/api/__test/rooms/${roomId}/timers`,
+  testEvict: (roomId: string) => `/api/__test/rooms/${roomId}/evict`,
+  testInstance: (roomId: string) => `/api/__test/rooms/${roomId}/instance`,
 } as const;
 
 /** Browser URL of a room (F01-AC2). */
@@ -57,10 +57,12 @@ export type RoomInfoResponse = v.InferOutput<typeof RoomInfoResponseSchema>;
 // ---- Test-mode-only hooks (404 unless the Worker runs with test mode on) ----
 
 /**
- * POST /__test/rooms/:roomId/timers (R-B2). Per-room overrides, so parallel tests don't interfere.
+ * POST /api/__test/rooms/:roomId/timers (R-B2). Per-room overrides, so parallel tests don't interfere.
  * Takes effect for subsequent timer evaluations. 204 on success.
  */
 export const TestTimersRequestSchema = v.object({
+  /** Time an unjoined connection may stay open (default JOIN_TIMEOUT_MS). */
+  joinTimeoutMs: v.optional(v.pipe(v.number(), v.integer(), v.minValue(50), v.maxValue(60_000))),
   heartbeatTimeoutMs: v.optional(
     v.pipe(v.number(), v.integer(), v.minValue(50), v.maxValue(3_600_000)),
   ),
@@ -74,7 +76,7 @@ export const TestTimersRequestSchema = v.object({
 export type TestTimersRequest = v.InferOutput<typeof TestTimersRequestSchema>;
 
 /**
- * POST /__test/rooms/:roomId/evict (R-B3, F01-AC30).
+ * POST /api/__test/rooms/:roomId/evict (R-B3, F01-AC30).
  * - `drop_memory`: discard all in-memory room state and caches but keep sockets open, simulating
  *   hibernation. The next message must be served from storage + socket attachments.
  * - `abort`: abort the Durable Object, closing sockets (exercises AC29 resume).
@@ -84,6 +86,6 @@ export type TestEvictRequest = v.InferOutput<typeof TestEvictRequestSchema>;
 export const TestEvictResponseSchema = v.object({ previousInstanceId: v.string() });
 export type TestEvictResponse = v.InferOutput<typeof TestEvictResponseSchema>;
 
-/** GET /__test/rooms/:roomId/instance: a per-instance ID that changes whenever the room is re-instantiated or its memory dropped. */
+/** GET /api/__test/rooms/:roomId/instance: a per-instance ID that changes whenever the room is re-instantiated or its memory dropped. */
 export const TestInstanceResponseSchema = v.object({ instanceId: v.string() });
 export type TestInstanceResponse = v.InferOutput<typeof TestInstanceResponseSchema>;

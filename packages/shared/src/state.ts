@@ -15,7 +15,7 @@ export const ParticipantSchema = v.object({
   name: v.string(),
   role: RoleSchema,
   online: v.boolean(),
-  /** Holds a vote in the current round. Always false for observers. Never carries the value. */
+  /** Holds a vote in the current round. False for observers in `voting` (switching withdraws the vote); after reveal an observer who switched keeps their revealed vote (F01-AC18) and shows true. Never carries the value. */
   hasVoted: v.boolean(),
 });
 export type Participant = v.InferOutput<typeof ParticipantSchema>;

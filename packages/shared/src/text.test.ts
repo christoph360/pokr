@@ -2,6 +2,7 @@ import * as v from 'valibot';
 import { describe, expect, it } from 'vitest';
 import { DEFAULT_ROOM_NAME } from './constants';
 import { containsForbiddenChars, graphemeLength, normalizeText, textSchema } from './text';
+import { CustomCardsSchema } from './deck';
 import { DisplayNameSchema, RoomNameSchema, TopicSchema } from './settings';
 
 const ok = (schema: v.GenericSchema, input: unknown) => v.safeParse(schema, input).success;
@@ -10,6 +11,20 @@ const out = (schema: v.GenericSchema, input: unknown) => v.parse(schema, input) 
 describe('text normalization (F01 Definitions)', () => {
   it('trims and collapses internal whitespace', () => {
     expect(normalizeText('  Alex   Smith   ')).toBe('Alex Smith');
+  });
+
+  it('applies NFC first, so composed and decomposed forms are equal', () => {
+    const composed = 'Zo\u00EB';
+    const decomposed = 'Zoe\u0308';
+    expect(composed).not.toBe(decomposed);
+    expect(normalizeText(decomposed)).toBe(composed);
+    expect(out(DisplayNameSchema, decomposed)).toBe(out(DisplayNameSchema, composed));
+    expect(out(TopicSchema, ` ${decomposed}  x `)).toBe(`${composed} x`);
+    expect(out(RoomNameSchema, decomposed)).toBe(composed);
+    // NFC also makes custom-deck uniqueness composition-independent
+    expect(ok(CustomCardsSchema, ['\u00E9', 'e\u0301'])).toBe(false);
+    // Hangul jamo compose to one syllable, still one grapheme
+    expect(graphemeLength(normalizeText('\u1112\u1161\u11AB'))).toBe(1);
   });
 
   it('counts grapheme clusters, not code units', () => {

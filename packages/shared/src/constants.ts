@@ -44,7 +44,7 @@ export const DEFAULT_BACKOFF = {
 // Rate limits (F01-AC37)
 export const RATE_LIMITS = {
   roomCreate: { limit: 5, windowMs: 60_000, scope: 'ip' },
-  join: { limit: 30, windowMs: 60_000, scope: 'ip' },
+  join: { limit: 120, windowMs: 60_000, scope: 'ip' },
   message: { limit: 20, windowMs: 10_000, scope: 'connection' },
 } as const;
 

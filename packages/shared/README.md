@@ -6,7 +6,7 @@ only, import from `@pokr/shared`. Spec: `docs/specs/01-rooms-and-voting.md`. ADR
 are plain JSON discriminated unions on `type`, with no WebSocket-specific fields.
 
 Everything free-text goes through the schemas (`DisplayNameSchema`, `RoomNameSchema`,
-`TopicSchema`, `CustomCardsSchema`), which normalize (trim, collapse spaces), reject control
+`TopicSchema`, `CustomCardsSchema`), which normalize (Unicode NFC first, then trim, collapse spaces), reject control
 characters and newlines (a tab is rejected, not collapsed), and count graphemes. Use them on the
 client for inline errors and on the server at the boundary. Use `parseClientMessage` /
 `parseServerMessage` to parse frames.
@@ -45,13 +45,20 @@ Room page URL: `/r/<roomId>`; IDs are 16 lowercase Crockford base32 chars, looku
 Omitted settings use defaults. The creator is the facilitator and a voter; the response token is
 used with `rejoin`.
 
-### Test-mode hooks (404 outside test mode; production must not honor them)
+### Test-mode hooks (`/api/__test/...`; 404 outside test mode; production must not honor them)
 
-- `POST /__test/rooms/:roomId/timers` `{heartbeatTimeoutMs?, offlinePurgeMs?, facilitatorClaimMs?}` -> 204. Per room.
-- `POST /__test/rooms/:roomId/evict` `{mode: "drop_memory" | "abort"}` -> `{previousInstanceId}`.
+- `POST /api/__test/rooms/:roomId/timers` `{heartbeatTimeoutMs?, offlinePurgeMs?, facilitatorClaimMs?, joinTimeoutMs?}` -> 204. Per room.
+- `POST /api/__test/rooms/:roomId/evict` `{mode: "drop_memory" | "abort"}` -> `{previousInstanceId}`.
   `drop_memory` discards in-memory state but keeps sockets (hibernation path, F01-AC30);
   `abort` closes sockets (reconnect path).
-- `GET /__test/rooms/:roomId/instance` -> `{instanceId}`; changes when the room is re-instantiated or memory dropped.
+- `GET /api/__test/rooms/:roomId/instance` -> `{instanceId}`; changes when the room is re-instantiated or memory dropped.
+- The hooks live under `/api/` because only `/api/*` runs the Worker first; any other path is served by the SPA fallback.
+- Test mode is on only when the Worker var `POKR_TEST_MODE` is exactly `"1"` (`wrangler dev --var POKR_TEST_MODE:1`);
+  it is not declared in `wrangler.jsonc`. Everything else, including the header below, is ignored otherwise.
+- Rate-limit key override: in test mode, `x-pokr-test-client-key: <string>` replaces the client IP as the key
+  for `POST /api/rooms` (5/min) and the WebSocket upgrade (120/min). Give each
+  test a unique value. In test mode a cookie named `x-pokr-test-client-key` is also read (browser WebSocket handshakes do not carry Playwright's extra headers, but do carry cookies); the header wins over the cookie, then `CF-Connecting-IP`, then `"unknown"`. Outside test mode both are ignored. Without it the key is `CF-Connecting-IP`, or
+  `"unknown"` locally.
 - The client backoff is overridden by passing a `BackoffConfig` to `backoffDelayMs` (frontend decides how it is injected).
 
 ## WebSocket protocol
@@ -166,8 +173,20 @@ connection closes. `rate_limited` keeps the connection open (F01-AC37).
 50 participants; name 1-30, room name 0-80 (empty = "Planning session"), topic 0-200, custom deck
 1-20 cards of 1-4 graphemes; heartbeat 10 s / timeout 25 s; offline purge 10 min; facilitator claim
 5 min; reconnect backoff 0.5 s x2 up to 15 s, +/-20% jitter, "reconnecting" indicator after 1 s;
-rate limits 5 creates/min/IP, 30 joins/min/IP, 20 messages/10 s/connection.
+rate limits 5 creates/min/IP, 120 joins/min/IP, 20 messages/10 s/connection.
 
 ## Tests
 
 `pnpm --filter @pokr/shared test`. Test names carry AC IDs.
+
+## Server behavior notes (apps/api)
+
+- Handshake errors that are not terminal (e.g. `invalid_input` for a bad name on `join`) keep the socket open so the client can fix the input and resend `join` on the same connection. `not_joined` / `already_joined` also keep it open. Terminal errors send `error {fatal:true}` then close with `WS_CLOSE_CODES`.
+- A no-op command (e.g. repeated `reveal`) answers with the sender's current `state` then `ack` (same version).
+- `already_claimed` is returned for a claim within 10 s of a successful claim; otherwise a claim while the facilitator is online is `claim_not_available`.
+- On claim the former facilitator's role becomes `voter`. On handover both keep their roles.
+- When the claim threshold passes the server pushes a fresh `state` (same version, new `serverTime`).
+- Rate-limited HTTP responses are 429 with `Retry-After`; `retryAfterMs` is the window length (the binding does not report the remainder).
+- Join limit (120/min/IP) counts only the WebSocket upgrade (so reconnects count). `GET /api/rooms/:id` is not limited by the binding.
+- A clean close marks the participant offline after a ~400 ms grace period, unless a connection with the same token arrives first (page reloads cause no offline flicker). Offline is still shown within 1 s.
+- Join timeout: a socket that sends nothing for `JOIN_TIMEOUT_MS` is closed with 4408, enforced server-side (`joinTimeoutMs` in the timers hook shortens it). Enforced by the alarm; the server socket is closed on time. Local `wrangler dev` quirk: if the client has sent no frame at all, workerd completes the close handshake to the peer only when the object is evicted, about 10 s later, so a silent client sees the `close` event at roughly 2x the timeout (no error frame is sent). A client that has sent anything (even a ping) sees it promptly. Allow 25 s, or send a ping first.

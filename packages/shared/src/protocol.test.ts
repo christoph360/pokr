@@ -227,7 +227,7 @@ describe('HTTP schemas and constants', () => {
 
   it('F01-AC37: rate limits', () => {
     expect(RATE_LIMITS.roomCreate).toMatchObject({ limit: 5, windowMs: 60_000 });
-    expect(RATE_LIMITS.join).toMatchObject({ limit: 30, windowMs: 60_000 });
+    expect(RATE_LIMITS.join).toMatchObject({ limit: 120, windowMs: 60_000 });
     expect(RATE_LIMITS.message).toMatchObject({ limit: 20, windowMs: 10_000 });
   });
 

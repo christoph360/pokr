@@ -10,7 +10,9 @@
     "typecheck": "tsc -p tsconfig.json"
   },
   "devDependencies": {
+    "@axe-core/playwright": "^4.13.0",
     "@playwright/test": "~1.61.1",
+    "@pokr/shared": "workspace:*",
     "@types/node": "^24.0.0",
     "typescript": "~6.0.3"
   }

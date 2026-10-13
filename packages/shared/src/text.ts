@@ -11,11 +11,12 @@ export function containsForbiddenChars(input: string): boolean {
 }
 
 /**
- * Trim and collapse internal whitespace to single spaces. Does not reject anything; callers
+ * Unicode NFC first (so "e" + U+0301 equals U+00E9 for length, uniqueness and AC8 suffix matching),
+ * then trim and collapse internal whitespace to single spaces. Does not reject anything; callers
  * check `containsForbiddenChars` on the raw input first (control chars are rejected, not collapsed).
  */
 export function normalizeText(input: string): string {
-  return input.replace(/\s+/gu, ' ').trim();
+  return input.normalize('NFC').replace(/\s+/gu, ' ').trim();
 }
 
 /** Length in Unicode grapheme clusters. */

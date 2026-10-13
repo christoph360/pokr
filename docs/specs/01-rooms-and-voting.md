@@ -215,7 +215,7 @@ This is the core loop. Every later feature builds on it.
   rules as AC4 and AC8.
 - **F01-AC37** Rate limits:
   - 5 room creations per minute per IP;
-  - 30 joins per minute per IP;
+  - 120 joins (WebSocket upgrades) per minute per IP, sized for teams sharing an office IP;
   - 20 messages per 10 s per connection.
 
   Exceeding a limit returns a `rate_limited` error. The connection stays open.
