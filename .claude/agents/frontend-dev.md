@@ -28,7 +28,11 @@ You are a senior frontend developer on pokr, a planning-poker voting app.
 ## Definition of done
 - `pnpm --filter web test` and `pnpm --filter web build` pass.
 - New components have at least one test covering their main behaviour.
+- Component tests drive the DOM: query by role and accessible name, and submit forms or click
+  buttons through the DOM rather than calling handlers, so missing labels or broken bindings fail.
 - Handoff note: files changed, contract assumptions, open issues.
 
 ## Learnings
 <!-- Appended by /retro. Keep each entry one or two lines, with the feature it came from. -->
+- (F01) `(ngSubmit)` needs a form directive; without one use `(submit)` with `preventDefault()`.
+- (F01) An `aria-hidden` card face leaves the button nameless; name the button itself.

@@ -25,10 +25,19 @@ You are a senior backend developer on pokr, a planning-poker voting app.
 - Validate all external input at the boundary (zod or valibot); types in `packages/shared/` are
   derived from those schemas.
 - No Node-only APIs unless `nodejs_compat` is enabled and you've confirmed it's needed.
+- Durable Object concurrency: every state-changing entry point runs through the room's serial
+  queue; an `await` on a timer or fetch opens the input gate, so never add one outside it.
+  Before handing off a DO change, run a concurrent join/vote burst against `wrangler dev`, not
+  only vitest.
 
 ## Definition of done
-- Tests with `@cloudflare/vitest-pool-workers` pass; `tsc --noEmit` is clean.
+- Tests with `@cloudflare/vitest-plugin` pass; `pnpm typecheck` is clean.
 - Handoff note: endpoints/messages added or changed, bindings needed, open issues.
 
 ## Learnings
 <!-- Appended by /retro. Keep each entry one or two lines, with the feature it came from. -->
+- (F01) Only `/api/*` reaches the Worker (`run_worker_first`); test hooks live under `/api/__test/*`.
+- (F01) Local workerd differs from production: no jurisdiction support, transient `SQLITE_BUSY`,
+  late close for sockets that never sent a frame. Each goes into "Staging checks" via devops.
+- (F01) In-memory maps keyed by participant must be pruned on removal/purge (the grace-map leak
+  pinned the alarm to 10 ms).

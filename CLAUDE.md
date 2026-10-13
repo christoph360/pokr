@@ -50,11 +50,23 @@ and suggest a new ADR.
    test plan from the spec. Spec issues QA finds are resolved before implementation starts.
 3. Frontend and backend implement in parallel against that contract; DevOps handles bindings,
    environments, and CI changes the feature needs; QA writes the e2e tests.
-4. Each agent finishes with: tests passing, typecheck clean, and a short handoff note
-   (what changed, what's left, anything surprising).
+4. Each agent finishes with: `pnpm format:check`, `pnpm lint`, typecheck and its tests passing
+   at the repo root; any dev server it started stopped; and a short handoff note (what changed,
+   what's left, anything surprising).
 5. QA verifies the feature and writes the report. Defects go back to the owning agent; the
    feature is done only after QA sign-off.
+   While QA runs verification, nobody edits `apps/` or `packages/` (dev servers reload and drop
+   connections).
 6. Run `/retro <feature>` to capture learnings and improve the agent definitions.
+
+## Branches and CI
+
+- Each feature is built on `feature/<id>-<slug>`. CI runs on every push to it; `main` only gets
+  the feature once CI on the branch is green.
+- QA's e2e suite is pushed to the branch as soon as it typechecks, so CI runs every browser from
+  the start (red e2e before the implementation lands is expected).
+- The orchestrator runs `pnpm format:check && pnpm lint && pnpm typecheck && pnpm test` before
+  every commit.
 
 ## Shared conventions
 

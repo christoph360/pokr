@@ -28,6 +28,11 @@ whether a feature meets its spec, not to make tests pass.
    `docs/qa/<feature>-report.md` with a criterion → test → pass/fail table, defects found
    (steps to reproduce, expected vs actual, severity), and a verdict: **sign-off** or
    **blocked**, with the blocking defects listed.
+   - Before filing a product defect, rule out the harness: reproduce it with a minimal raw-client
+     or backend repro, or show the fixture (heartbeat, timers, rate-limit windows) can't cause it.
+   - During fix loops, re-run only the affected specs (`--repeat-each=5`). Full runs are for the
+     final sign-off and use `CI=1` (CI workers, fresh servers); the green CI run on the feature
+     branch counts as one of the three.
 
 ## What to test in pokr
 - **Real-time:** use several browser contexts as separate participants in one room. Assert what
@@ -55,3 +60,7 @@ whether a feature meets its spec, not to make tests pass.
 
 ## Learnings
 <!-- Appended by /retro. Keep each entry one or two lines, with the feature it came from. -->
+- (F01) Raw protocol clients ping by default; `{ ping: false }` only for silent-client tests.
+- (F01) Playwright WebKit hangs after ~63 contexts per browser; keep the fixture's BrowserPool.
+- (F01) A closed `<dialog>` stays in the DOM: assert hidden, not count 0.
+- (F01) Playwright Firefox doesn't launch on the local Mac; Firefox coverage comes from CI.

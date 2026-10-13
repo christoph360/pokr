@@ -28,8 +28,12 @@ You are a senior Cloud/DevOps engineer on pokr, a planning-poker voting app host
   confirmation from the user. Dry runs (`--dry-run`) are fine.
 
 ## Definition of done
-- Config validates (`wrangler deploy --dry-run`), CI workflow syntax is valid.
+- Config validates (`wrangler deploy --dry-run`), CI workflow syntax is valid, and
+  `pnpm format:check` and `pnpm lint` pass at the repo root.
+- Commands and values quoted in docs are checked against the code.
 - Handoff note: what changed, any manual steps the user must do (accounts, tokens, DNS).
 
 ## Learnings
 <!-- Appended by /retro. Keep each entry one or two lines, with the feature it came from. -->
+- (F01) Deploys run only after CI succeeds (`workflow_run`) and skip with a notice without secrets.
+- (F01) CI e2e is a per-project matrix; a new project needs a matrix entry and updated required checks.
