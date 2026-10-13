@@ -1,10 +1,11 @@
 # F01 test plan: Rooms and voting
 
-- Spec: `docs/specs/01-rooms-and-voting.md` (Draft), `docs/specs/00-product-overview.md`
+- Spec: `docs/specs/01-rooms-and-voting.md` (rev 2), `docs/specs/00-product-overview.md`
 - ADRs: 0001 (WebSockets + Hibernation), 0002 (EU jurisdiction)
 - Author: qa-engineer
-- Status: Draft v1, written before implementation. Section 6 (spec issues) must be resolved
-  before implementation starts. Rows marked "(pending SI-nn)" may change with the resolution.
+- Status: v2 (spec rev 2). All 29 spec issues (section 6) are resolved; rows marked
+  "(pending SI-nn)" are settled by the rev 2 wording summarised in section 2a. E2E tests are
+  written (`e2e/tests`); the traceability table in the report maps AC to test names.
 
 ## 1. Approach and levels
 
@@ -25,7 +26,7 @@ Principles:
   addition to the browser contexts. A browser context is expensive; use at most 4 per test.
 - Flaky tests are reported as defects, never retried until green.
 
-## 2. Coverage table (F01-AC1 to F01-AC30)
+## 2. Coverage table (F01-AC1 to F01-AC30, original rows)
 
 "Ctx" = number of browser contexts (separate participants) needed for the e2e part. "+raw" means
 additional raw WebSocket clients are used.
@@ -62,6 +63,52 @@ additional raw WebSocket clients are used.
 | AC28 | e2e; backend | Votes cast, facilitator picks a new deck: confirmation dialog; Cancel: deck and votes unchanged; Confirm: new deck for all, votes cleared everywhere. No votes cast: no dialog, deck changes. Revealed round with votes (SI-23). Race: vote arrives after dialog opened (SI-23). Selecting the same deck is not a change. Raw WS deck change without confirmation flag when votes exist: rejected. | 3 (+raw) |
 | AC29 | e2e (offline via `context.setOffline`); frontend unit (backoff); backend | Voter votes, context offline: non-blocking "reconnecting..." indicator (page remains interactive, no modal); others see voter offline but still "voted". Back online: indicator disappears, state resynced, own card still selected, facilitator still sees voted. While offline: round was revealed / reset / settings changed / topic changed by others: after reconnect client shows the final state, not stale. Vote cast while offline (SI-24). Repeated offline/online flapping 5x. Backoff intervals: frontend unit with fake timers. Server-side connection closed (not network): same behavior. | 2 |
 | AC30 | backend (spec-mandated); e2e (smoke, via test hook) | Backend: set topic, settings, votes, roles, offline participant; abort/evict DO; reconnect; assert identical state. Because abort closes sockets, also need the true hibernation path (open sockets survive, memory dropped): see SI-25 and request R-B3. e2e smoke: room with 2 participants, force eviction through the test hook, both clients still connected or reconnect, votes intact, a new vote works. | 2 |
+
+## 2a. Rev 2 changes to the coverage table
+
+Settled by the rev 2 spec (the original rows above remain valid with these decisions applied):
+
+| AC | Rev 2 decision | Test approach |
+| --- | --- | --- |
+| AC1 | Start page also takes auto-reveal and facilitator votes; custom deck per AC34 | e2e `create-join.spec.ts` |
+| AC2 | 16 lowercase Crockford base32, `crypto.getRandomValues`, case-insensitive lookup | e2e (format, case) + backend (source of randomness) |
+| AC3 | Room name 1-80, empty falls back to "Planning session" | e2e + raw API |
+| AC4/AC5 | Grapheme counting, whitespace-only invalid; tabs share one participant; purged/removed means fresh join | e2e + raw (`protocol.spec.ts`) |
+| AC6 | HTTP 404, WS upgrade refused, no storage written | e2e + raw; "no storage" = backend test |
+| AC7 | Cap counts offline too; returning token always admitted; "room is full" before name prompt | raw (50 clients) + e2e |
+| AC8 | Join-order suffix, case-insensitive, stable | e2e |
+| AC9/AC10 | Highlight only after server ack; Space/Enter withdraw | e2e |
+| AC11 | Own vote allowed (`myVote`); frame inspection excludes `settings.deck` and own `myVote` | e2e frames + backend |
+| AC12 | x/y definition fixed | e2e |
+| AC13 | Observers never reveal/reset; topic/settings facilitator only | e2e + raw |
+| AC14 | 2 s e2e bound | e2e |
+| AC15 | Rounding, median, consensus, extremes (all holders) as specified | e2e table with independent oracle |
+| AC16/AC22 | Predicate re-evaluated on every event incl. disconnect, removal, role switch, setting change | raw + e2e |
+| AC17/AC18 | No-op second reveal; nothing changes after reveal; `left` marker | raw + e2e |
+| AC19 | Reset in both phases; confirmation only when unrevealed votes would be lost; optional atomic topic | e2e + raw |
+| AC20 | Topic any state, no newlines | e2e + raw |
+| AC21 | 1 s clean close, 30 s silent, purge rules, facilitator never purged, test-mode timers | e2e + raw |
+| AC23/AC24/AC25 | Removal, `target_offline`, claim with `already_claimed`, former facilitator becomes voter | e2e + raw |
+| AC27/AC28 | `confirmReset`, `confirmation_required`, same deck is not a change | e2e + raw |
+| AC29 | Indicator after 1 s, cards disabled while disconnected, backoff 0.5 s x2 max 15 s +/-20 % (test config shortens) | e2e (route-layer network control) |
+| AC30 | `drop_memory` and `abort` hooks | e2e + raw; backend test |
+| AC31 | Single EU helper, backend unit test with fake namespace. Not observable locally (workerd has no jurisdiction): e2e part deferred to staging | backend + manual/deferred |
+| AC32 | IDs only in logs | backend test (review); e2e not applicable |
+| AC33 | axe, keyboard-only, live regions, non-colour cues, reduced motion | e2e `a11y.spec.ts`; screen reader pass manual |
+| AC34 | Custom deck 1-20 unique cards of 1-4 graphemes; specials appended | e2e + raw |
+| AC35 | Facilitator votes off | e2e + raw |
+| AC36 | Rename with AC4/AC8 rules | raw (UI has `rename-*` ids; UI test is a gap, see report) |
+| AC37 | 5 creates/min per IP, joins limit (now 120 WebSocket upgrades/min per IP, from `RATE_LIMITS`; info requests are not limited), 20 msgs/10 s, connection stays open | raw API with a dedicated client key per test |
+
+### Implementation notes (e2e)
+- Servers: Playwright `webServer` starts `wrangler dev --var POKR_TEST_MODE:1` (via the api `dev`
+  script) and `ng serve`. `global-setup.ts` fails fast when the API is not in test mode.
+  `E2E_API_PORT`/`E2E_WEB_PORT` override ports to avoid stale servers.
+- Rate limits: every context and raw client uses its own `x-pokr-test-client-key`.
+- Network loss: `NetControl` (route layer) closes or black-holes the page WebSocket; frames are
+  recorded at the same layer for those contexts. Other contexts record with `page.on("websocket")`.
+- Tags: `@cross-browser` (also firefox/webkit/mobile-chrome), `@chromium-only` (races, heavy and
+  API-only specs).
 
 ## 3. Additional scenarios (implied by the spec, not listed)
 
@@ -248,262 +295,9 @@ nearest AC in the report.
 
 ## 6. Spec issues
 
-Severity: **B** = blocks writing a correct test or implementation (resolve before implementation);
-**M** = ambiguity likely to cause rework; **m** = minor/clarification.
-
-**SI-01 (B) AC11 contradicts AC9 / AC29.**
-Quote AC11: "The server never sends vote values to any client before reveal." AC9: "my card is
-highlighted for me" and AC29: "my vote in the current round is preserved ... On reconnect it
-receives the full room state." After a reload or reconnect the server must send the voter their own
-card, otherwise the highlight cannot be restored. Taken literally, AC11 forbids this.
-Also "backend test that inspects all outgoing messages" excludes HTTP responses and logs.
-Proposed: "Before reveal, the server sends a vote value only to the participant who cast it
-(as that participant's own current vote, including on reconnect). No other client receives
-it in any message, HTTP response, or log line. Verified by a backend test that inspects all outgoing
-messages to every connection during a `voting` round, including resync and join snapshots, and by an
-e2e frame inspection."
-
-**SI-02 (B) AC15: "numeric decks" undefined.**
-Quote: "for numeric decks: average (1 decimal) and median, excluding `?` and `☕`". Fibonacci contains
-`½`; T-shirt is non-numeric; a Custom deck can be mixed ("S", "3", "12"). Not stated whether the
-average is shown on mixed decks or how `½` and non-ASCII values are parsed.
-Proposed: "Each deck card has a numeric value or none. Fibonacci, Modified Fibonacci and Powers of 2
-are numeric (`½` = 0.5); T-shirt is not numeric. A Custom deck is numeric only if every card other
-than `?` and `☕` parses as a decimal number (`.` separator, no exponent). Average and median are shown
-only for numeric decks and are computed over numeric votes only. If no numeric votes exist, they
-are omitted."
-
-**SI-03 (B) AC15: rounding and median rules.**
-"average (1 decimal) and median": rounding mode unspecified (2.25: 2.3 or 2.2?), median of an even
-number of votes unspecified (3 and 5 = 4; 2 and 3 = 2.5), median display precision unspecified,
-and `½` display ("0.5" or "½").
-Proposed: "Average is rounded half away from zero to one decimal, always shown with one decimal
-(e.g. `5.0`). Median of an even count is the mean of the two middle values, shown with up to one
-decimal (`2.5`, `4`). Halves are shown as decimals in the summary."
-
-**SI-04 (M) AC15: consensus edge cases.**
-Quote: "a 'consensus' badge when all numeric votes are equal". Undefined for: a single numeric vote,
-mix of equal numbers and `?`/`☕`, all `?`, and non-numeric decks (T-shirt consensus is the most
-natural use). Also ties up with AC17 (zero votes).
-Proposed: "Consensus is shown when there are at least 2 votes with a deck value (excluding `?`
-and `☕`) and all of them are the same card, on any deck. `?` and `☕` votes do not break
-consensus but are listed in the distribution. Never shown with zero or one such votes."
-
-**SI-05 (M) AC15: lowest/highest voters.**
-Quote: "the lowest and highest voters highlighted when they differ". Undefined: ties (all voters
-holding the min), non-numeric decks (order by deck position?), treatment of `?`/`☕`, and
-that colour is not the sole indicator (NFR).
-Proposed: "Among voters with a non-special card, rank by deck position. If lowest and highest
-differ, every voter holding the lowest card and every voter holding the highest card is marked
-with a text label (Lowest/Highest) and a visual highlight. `?` and `☕` voters are never marked."
-
-**SI-06 (B) AC16 / AC22: "all voted" definition and triggers.**
-AC16: "when the last voter votes, then the round reveals". AC22: "'all voted' counts online voters
-only". Undefined: (a) does reveal also fire when the last non-voting voter goes offline, is removed,
-or switches to observer (AC22 "don't block" implies yes, AC16 literally says no); (b) turning
-auto-reveal on when everyone has already voted; (c) withdrawal after reveal; (d) minimum of one vote
-(zero online voters or only observers must not reveal an empty round); (e) a flaky connection of
-a not-yet-voted voter would reveal everyone's votes prematurely, which is a product risk (grace period?);
-(f) facilitator-votes off.
-Proposed: "In `voting` state with auto-reveal on, the round reveals as soon as: at least one online
-voter exists and every online voter (a participant with role voter, excluding the facilitator when
-facilitator-votes is off) holds a vote. This is re-evaluated on every vote, withdrawal, disconnect, removal,
-role switch, join and settings change. Disconnects count only after the offline-detection timeout
-(SI-10)." Product owner decides on (e).
-
-**SI-07 (M) AC12 vs AC22: meaning of "x of y voted".**
-AC12: "not counted in 'x of y voted'". Is y all voters, or only online voters (AC22)? Is an
-offline voter who voted counted in x? Is the facilitator counted when facilitator-votes is off?
-Proposed: "x = voters (any presence) with a vote in the current round; y = voters currently online
-plus offline voters who have a vote. Observers, and the facilitator when facilitator-votes is off, are
-excluded from both." (Or any consistent rule; auto-reveal then uses y online-only.)
-
-**SI-08 (B) AC18 vs AC26 (and AC23, AC27): changes to a revealed round.**
-AC18: "After reveal, votes can't be changed." AC26: "Switching to observer withdraws a vote in the
-current round." Which wins after reveal? Same for removing a participant (AC23) who has a revealed vote,
-and turning facilitator-votes off, and an offline voter's purge.
-Proposed: "After reveal, no action changes the revealed votes or the summary: role switches,
-removals and setting changes take effect for the next round only; a removed participant's revealed
-vote stays visible until reset (shown under their name with a 'left' marker). Withdrawal on
-role switch applies in `voting` state only."
-
-**SI-09 (B) Who may do what in "everyone" mode, and observers.**
-AC13: "Given 'everyone', all voters see them." Overview: observers "See everything, never votes";
-the overview says voters reveal/reset only in "everyone" mode. Unclear whether observers get
-reveal/reset, and whether the facilitator's role in AC19 ("so the facilitator can edit it"), AC20
-("The facilitator can set an optional topic") and user story 5 ("optionally set a new topic") extends to
-other participants in everyone mode. AC27 says only the facilitator changes settings, but not
-explicitly that this holds in everyone mode.
-Proposed: "In everyone mode every participant with role voter or facilitator may reveal and reset;
-observers may not. Topic and settings can be changed only by the facilitator in both modes. Reset
-takes an optional new topic (one action)."
-
-**SI-10 (B) AC21: "immediately" is untestable and not guaranteed.**
-Quote: "Participants who disconnect show as offline immediately." A dropped network (Wi-Fi off, laptop
-sleep, `setOffline`) sends no close frame; the server only learns through a ping/timeout. No
-heartbeat or timeout is specified.
-Proposed: "A clean close marks the participant offline within 1 s. Without a close frame, the server
-detects loss via a heartbeat and marks the participant offline within 30 s (configurable, default
-stated here)." Also specify how reconnecting within that window is handled (no flicker).
-
-**SI-11 (B) AC21: purge timing, facilitator, and interplay with AC25 and AC7.**
-Quote: "removed from the list after 10 minutes offline, unless they have a vote in the current
-round." Undefined: (a) what happens to a retained voter at reset (purged immediately if >10 min offline, or
-10 minutes restart?); (b) the facilitator: after 10 minutes offline, AC25 allows claiming but AC21 would purge the
-facilitator (who may not have voted, or has facilitator-votes off), leaving no facilitator; (c) an
-offline observer; (d) "10 minutes" is not testable in e2e.
-Proposed: "Offline time is measured from the last disconnect. A participant is purged at
-`max(10 min after disconnect, next reset)` if they hold no vote in the current round,
-or at the next reset if they hold one and 10 min have passed. The current facilitator is never purged;
-the role moves only by AC24/AC25. Durations are configurable in test mode (R-B2)."
-
-**SI-12 (M) AC7: what counts toward 50.**
-Quote: "Given a room with 50 participants". Overview adds "observers included". Not stated whether
-offline-but-retained participants count (they hold a slot up to 10+ min), nor the check order
-(before or after the name form), nor whether a returning participant (AC5) is admitted when full.
-Proposed: "The cap of 50 counts every participant in the list (online or offline, voter or observer). A
-returning participant already in the list is always admitted. The 'room is full' check happens when the
-link is opened, before asking for a name."
-
-**SI-13 (M) AC5: identity scope and edge states.**
-Quote: "joined before from this browser ... rejoin as the same participant". Undefined: token scope
-(per room or per browser), two tabs with the same token (one participant, two connections: when is
-it offline?), return after being purged (AC21) or removed (AC23), and a changed name.
-Proposed: "The browser stores one token per room. Tabs sharing the token are one participant who is online
-while at least one connection is open. If the participant was purged, returning is a fresh join
-(name prompt, subject to the cap). Name and role can be changed after joining" (or state that they can't).
-
-**SI-14 (B) AC23: removed participants and AC5/AC29 auto-rejoin.**
-Quote: "The removed participant sees 'you were removed from the room' and can rejoin via the link."
-With AC5 (stored token rejoins silently) and AC29 (client reconnects) the removed client either
-rejoins at once or loops. What is "rejoin": new participant, same identity? Is the removed participant's
-vote deleted? Is there a cool-off (rate limit vs abuse)?
-Proposed: "Removal deletes the participant's token and their vote (pre-reveal; see SI-08 after reveal). The
-removed client shows the notice and does not auto-reconnect. Opening the link again (or pressing 'Rejoin') starts a fresh join with the name prompt."
-
-**SI-15 (M) AC24: handover details.**
-Quote: "hand the role to another online participant ... The old facilitator becomes a voter." Undefined:
-can the target be an observer (then becomes facilitator and observer? facilitator-votes?), what if the old
-facilitator was an observer (forced into voter?), how facilitator-votes applies to the new facilitator,
-what happens to a vote the old facilitator already cast, and the race where the target goes offline
-or switches role.
-Proposed: "The target may be any online participant; each keeps their own voter/observer role. The old
-facilitator keeps their voter/observer role (no forced change). Handover is atomic: if the target is not online when
-processed, it is rejected with `target_offline`. Existing votes stay."
-
-**SI-16 (M) AC25: claim rules and testability.**
-Quote: "If the facilitator is offline for more than 5 minutes, any online participant can claim the
-facilitator role." Undefined: who measures (client clocks drift: server should say `canClaimAt`), may observers
-claim, what happens to the returning facilitator (voter, as in AC24?), the simultaneous claim winner,
-multiple facilitator tabs, and "offline for 5 minutes" if facilitator-offline lasts through
-a purge (SI-11). Also 5 minutes is not testable without a test-mode override.
-Proposed: "Server-side rule, threshold configurable in test mode. Any online participant including observers may
-claim; first claim wins, later ones get `already_claimed`. The previous facilitator becomes a voter on return."
-
-**SI-17 (M) Free-text limits: unit and normalization.**
-AC4 "(1–30 chars)", AC20 "max 200 chars", overview "max 80 chars", "each max 4 characters". Not stated:
-counting unit (UTF-16 code units vs code points vs graphemes: 4-char custom card "👨‍👩‍👧‍👦" or "½☕12"), trimming,
-whitespace-only names, newlines/control characters, Unicode normalization. Names are also required for creating
-a room (AC1) but the 1-30 limit is only in AC4. Counting must match between server and client.
-Proposed: "All lengths count Unicode grapheme clusters after trimming leading/trailing whitespace; internal whitespace is
-collapsed to single spaces; control characters and newlines are rejected for names, room names and cards, topics may contain no newlines;
-an empty result after trimming is invalid for names and valid (cleared) for topics. Same rules for create and join."
-
-**SI-18 (M) AC1/AC27: creation inputs, custom deck rules, facilitator-votes.**
-AC1 lists only "name, optional room name, deck, control mode" but the overview says auto-reveal and
-facilitator votes are chosen at creation too. There is no AC for the Custom deck input: duplicates, empty cards,
-`?`/`☕` typed manually, whether "up to 20" includes the two automatic cards, minimum count. There is no AC on what
-"Facilitator votes: off" does (no cards, excluded from counters, vote withdrawal if toggled mid-round).
-Proposed: add criteria: "Custom deck: 1-20 unique cards (case-insensitive), each 1-4 graphemes; `?` and `☕` are
-appended and cannot be entered; duplicates are rejected with an inline error. Facilitator votes off: the facilitator sees
-no cards, is excluded from x/y and auto-reveal, and a vote already cast is withdrawn in `voting` state."
-
-**SI-19 (m) AC2: "unguessable (>= 80 bits)" not directly testable; format unspecified.**
-Proposed: "roomId is 16 characters of Crockford base32 (80 bits) from a CSPRNG, e.g. `/r/7k3m9q2x4h8d5tnw`
-(overview/ADR 0002 mention 'short random slugs'). Backend test asserts the generator's length, alphabet and use of
-`crypto.getRandomValues`." Also state URL case sensitivity.
-
-**SI-20 (M) AC6: "does not exist or has expired".**
-Expiry is F03, so it can't be tested in F01. Also, with `idFromName` every name maps to a Durable Object,
-so "does not exist" requires the DO to track whether it was ever created and not create state on
-read. Distinguish malformed IDs from valid-but-unknown IDs, and say whether the result is HTTP 404 and what a WebSocket upgrade returns.
-Proposed: "F01 covers non-existent rooms only; expired rooms are an F03 criterion. A room exists only after an
-explicit create request. Opening or connecting to an unknown or malformed ID shows 'room not found' and creates nothing
-(no DO storage written)."
-
-**SI-21 (M) AC8: disambiguation scheme.**
-Quote: "e.g. 'Alex (2)'". Undefined: who gets the suffix, whether numbers are stable when the first Alex leaves, case-insensitive
-matching, and where it appears (list, votes, highlights, announcements).
-Proposed: "Suffix is assigned by the server by join order among current list members with the same
-case-insensitive trimmed name; the first keeps the plain name; a participant's suffix does not change while they stay in the list;
-a purged participant's number may be reused. Shown everywhere the name appears, and in accessible names."
-
-**SI-22 (M) AC14: "at the same moment" cannot be asserted.**
-Proposed: "The reveal is a single state change broadcast to all connections; each online client displays the votes
-within 500 ms (p95) of each other and of the reveal (NFR). The animation does not delay screen-reader availability."
-E2E asserts a fixed bound (e.g. 2 s locally) and identical content; the 500 ms p95 is a perf measurement.
-
-**SI-23 (M) AC28: confirmation protocol and scope.**
-Quote: "asks for confirmation and resets the round". Undefined: does it apply to a revealed round (votes exist, results lost),
-what others see while the dialog is open, and the race where the dialog was shown with zero votes but votes arrive before submission
-(or vice versa). A client-side-only confirmation can be bypassed.
-Proposed: "A deck change request carries `confirmReset: boolean`. If votes exist (voting or revealed state) and `confirmReset` is false the server
-rejects with `confirmation_required`; with true it resets the round and applies the deck. The client shows the dialog when
-votes exist and re-sends if the server answers `confirmation_required`. Selecting the current deck is not a change."
-
-**SI-24 (B) AC29: reconnect behavior under-specified.**
-Quote: "The client retries with backoff" (no parameters); "non-blocking 'reconnecting...' indicator" (when does it appear: immediately or after a
-delay?); "my vote ... is preserved". Gaps: a vote sent while offline (selected locally, never delivered): is it queued,
-rejected, or the card disabled while offline? When does the highlighted card reflect the server rather than local intent?
-What after N failed attempts (give up state)? Reconnect after the participant was purged/removed/room gone.
-Proposed: "Cards show as selected only after server acknowledgement; while disconnected cards are disabled (with the
-indicator) and no vote is queued. Backoff: 0.5 s start, x2, max 15 s, +/-20% jitter, retried forever; indicator shows
-after 1 s of disconnect and hides after resync. If the server reports removed/not found on reconnect, show the AC23/AC6 screen. The
-indicator is a polite live region."
-
-**SI-25 (B) AC30: neither "idle" nor the verification is well-defined or feasible as worded.**
-Quote: "An idle room (no messages) hibernates ... Verified by a backend test that evicts the Durable Object and reconnects."
-(a) Idle duration is platform-defined; the spec gives no threshold. (b) Evicting the DO (e.g., `abort()`) closes sockets and so
-tests recovery (AC29), not the Hibernation API path where sockets stay open and in-memory state is dropped (ADR 0001:
-`serializeAttachment`, state in storage). A test that only evicts and reconnects may pass with code that would break
-on real hibernation. It also isn't clear that Miniflare/vitest-pool-workers can force that path.
-Proposed: "After >= 10 s without messages the room may be evicted from memory. A message
-sent on an existing connection after eviction is processed with all room state (settings, topic, round state,
-votes, participants, roles, presence of connected sockets restored from attachments) intact. Verified by (1) a backend
-test that discards in-memory state while keeping sockets open, or documents why this can't be done, plus
-(2) an e2e/wrangler-dev smoke test using the test hook R-B3."
-
-**SI-26 (M) AC19 / AC20 / user story 5: reset semantics.**
-AC19: "the topic field is kept so the facilitator can edit it." Is the old topic still shown to everyone until the facilitator edits? Can reset happen in
-`voting` state (before reveal) and does it need confirmation? Does "optionally set a new topic" happen in the same action as reset? When can the
-topic be changed (any state)? Offline voters' retained votes cleared?
-Proposed: "Reset is available in both states (confirmation only when votes would be lost, optional). It clears all votes (including those of offline
-participants) and keeps the current topic visible to everyone until the facilitator saves a new one. Reset takes an optional topic and applies both atomically.
-Topic can be edited in any state."
-
-**SI-27 (M) NFRs referenced by F01 lack testable numbers.**
-"Rate limits on room creation, joins, and messages per connection" has no thresholds or response behavior, so QA can't
-test or report a defect. "within 500 ms (p95) under normal network conditions" lacks a definition of normal
-conditions and a measuring point. "last two versions of Chrome, Edge, Firefox, Safari (macOS and iOS)": Edge and real
-iOS can't be run by Playwright.
-Proposed: state limits (e.g. 5 room creations / minute / IP, 30 joins / minute / IP, 20 messages / 10 s / connection)
-and the response (`rate_limited`, connection stays open). Define normal as <= 100 ms RTT, measured server-receive to client-render
-in a staging environment. Accept Chromium/Firefox/WebKit + iPhone emulation as proxies, with manual real-device smoke.
-
-**SI-28 (m) AC9/AC10/AC17 small gaps.**
-AC10 "click my card again" has no keyboard equivalent stated (NFR needs keyboard operability); AC17 does not say whether revealing an already revealed round
-is a no-op; AC9 does not say whether the voter's own "voted" indicator appears in the list.
-Proposed: "Pressing the selected card by pointer or Space/Enter withdraws the vote. Reveal in `revealed` state is a no-op. The voter sees their own
-indicator in the list."
-
-**SI-29 (m) ADR rules with no acceptance criteria.**
-ADR 0002 requires a backend test of `id.jurisdiction === "eu"` and no personal data in logs; ADR 0001 requires hibernation API use and full resync.
-They are not criteria in F01, so they will not appear in the traceability table or the sign-off.
-Proposed: add F01-AC31 ("Room Durable Objects are created in the EU jurisdiction via a single helper, verified by a backend test asserting `id.jurisdiction === "eu"`")
-and F01-AC32 ("Logs contain IDs only; no names, topics, or votes"), and an AC33 for accessibility (axe, keyboard, reveal announcement) taken from the NFR,
-since UI notes mention it (copy feedback, reduced motion) without IDs.
-
-Summary: 29 spec issues (11 blocking: SI-01, 06, 08, 09, 10, 11, 14, 24, 25, plus SI-02 and SI-03 for AC15; the rest major/minor).
+**Resolved.** All 29 issues (SI-01 to SI-29) were resolved in spec rev 2 (Definitions section and
+AC31-AC37). The original issue text is kept in the git history of this file; the decisions are
+summarised in section 2a. New observations while writing the tests are listed in the report.
 
 ## 7. Out of scope and deferred
 - Story list, export/expiry, accounts (F02-F04); room expiry for AC6 (F03).
