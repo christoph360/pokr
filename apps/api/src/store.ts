@@ -41,6 +41,9 @@ export interface LeftRow {
   card: string;
 }
 
+/** Newest removed-token hashes kept per room; older ones fall back to invalid_token (F01-AC23). */
+export const TOMBSTONE_MAX = 200;
+
 type Row = Record<string, SqlStorageValue>;
 
 const PARTICIPANT_COLUMNS = new Set([
@@ -75,6 +78,7 @@ export class RoomStore {
       seq INTEGER NOT NULL, offline_since INTEGER)`);
     this.sql.exec(`CREATE TABLE left_votes (
       participant_id TEXT PRIMARY KEY, name TEXT NOT NULL, card TEXT NOT NULL)`);
+    this.ensureTombstones();
     this.sql.exec(
       'INSERT INTO room VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
       room.roomId,
@@ -89,6 +93,32 @@ export class RoomStore {
       room.claimPushed,
       room.lastClaimAt,
     );
+  }
+
+  /** Token hashes of removed participants (hash + time only, no personal data). Also created lazily for older rooms. */
+  private ensureTombstones(): void {
+    this.sql.exec(
+      'CREATE TABLE IF NOT EXISTS tombstones (token_hash TEXT PRIMARY KEY, removed_at INTEGER NOT NULL)',
+    );
+  }
+  addTombstone(tokenHash: string, now: number): void {
+    this.ensureTombstones();
+    this.sql.exec('INSERT OR REPLACE INTO tombstones VALUES (?, ?)', tokenHash, now);
+    this.sql.exec(
+      'DELETE FROM tombstones WHERE rowid NOT IN (SELECT rowid FROM tombstones ORDER BY rowid DESC LIMIT ?)',
+      TOMBSTONE_MAX,
+    );
+  }
+  isTombstoned(tokenHash: string): boolean {
+    this.ensureTombstones();
+    return (
+      this.sql.exec('SELECT 1 AS x FROM tombstones WHERE token_hash = ?', tokenHash).toArray()
+        .length > 0
+    );
+  }
+  tombstoneCount(): number {
+    this.ensureTombstones();
+    return this.sql.exec<Row>('SELECT COUNT(*) AS n FROM tombstones').one()['n'] as number;
   }
 
   room(): RoomRecord {

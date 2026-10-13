@@ -16,7 +16,7 @@ export const ERROR_CODES = [
   'invalid_input', // schema/normalization failure; `field` names the offending field when known
   'removed', // the participant was removed by the facilitator (F01-AC23)
   'invalid_card', // card is not in the room's deck
-  'invalid_token', // unknown participant token (purged, removed, or never valid): start a fresh join
+  'invalid_token', // unknown participant token (purged or never valid; a removed participant's token gets `removed`): start a fresh join
   'not_joined', // a command arrived before join/rejoin completed
   'already_joined', // join/rejoin on a connection that is already joined
   'unknown_target', // target participant ID is not in the room

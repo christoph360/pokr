@@ -539,7 +539,14 @@ export class RoomDurableObject extends DurableObject<AppEnv> {
     }
     const floor = Math.max(10, Math.min(1000, d.heartbeat / 4));
     let target = Math.max(next, now + floor);
-    for (const closedAt of this.closing.values()) {
+    // Pending clean-close grace deadlines; entries of removed/purged participants or past their
+    // grace are not deadlines (a leaked entry used to pin the alarm to now + 10 ms).
+    const ids = new Set(this.store.participants().map((p) => p.id));
+    for (const [pid, closedAt] of this.closing) {
+      if (!ids.has(pid) || closedAt + CLOSE_GRACE_MS < now) {
+        this.closing.delete(pid);
+        continue;
+      }
       target = Math.min(target, Math.max(closedAt + CLOSE_GRACE_MS + 1, now + 10));
     }
     if (current === null || current > target || current < now)
@@ -727,7 +734,13 @@ export class RoomDurableObject extends DurableObject<AppEnv> {
           });
         } else {
           const p = this.store.participantByHash(hash);
-          if (!p) throw new CommandError('invalid_token', 'unknown token', undefined, true);
+          if (!p) {
+            // Removed while offline: the tombstone makes the token terminal, never admitted (F01-AC23).
+            if (this.store.isTombstoned(hash)) {
+              throw new CommandError('removed', 'you were removed from the room', undefined, true);
+            }
+            throw new CommandError('invalid_token', 'unknown token', undefined, true);
+          }
           pid = p.id;
           if (p.offline_since !== null) this.store.updateParticipant(p.id, { offline_since: null });
         }
@@ -848,6 +861,7 @@ export class RoomDurableObject extends DurableObject<AppEnv> {
         if (room.phase === 'revealed' && target.vote !== null) {
           s.insertLeft({ participant_id: target.id, name: target.display_name, card: target.vote });
         }
+        s.addTombstone(target.token_hash, now);
         s.deleteParticipant(target.id);
         fx.push(() => {
           for (const ws of this.ctx.getWebSockets()) {

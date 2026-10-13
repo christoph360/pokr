@@ -1,7 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { votedCounter } from '@pokr/shared';
 import type { RoomState, ServerMessage } from '@pokr/shared';
-import { Client, api, closeAll, expectAck, expectCode, setup } from './helpers';
+import { env, evictDurableObject, runInDurableObject } from 'cloudflare:test';
+import { getRoomStub } from '../src/room-stub';
+import { TOMBSTONE_MAX } from '../src/store';
+import type { RoomStore } from '../src/store';
+import { Client, api, closeAll, expectAck, expectCode, setTimers, setup } from './helpers';
 
 afterEach(closeAll);
 
@@ -74,6 +78,11 @@ describe('F01-AC11: vote secrecy', () => {
     httpBodies.push(await (await api(`/api/rooms/${id}`)).text());
     httpBodies.push(await (await api(`/api/rooms/${id}`)).text());
 
+    // A rename and a removal also log IDs only.
+    expectAck(await carol.cmd_({ type: 'rename', name: 'Carolrenamedsecret' }));
+    expectAck(await fac.cmd_({ type: 'remove_participant', participantId: late.participantId }));
+    await late.waitForClose();
+
     const tokens = ['q7x1', 'w2e9', 'r5t6', 'y8u3'];
     const ownVote: Record<string, string | null> = {};
     for (const [name, c] of Object.entries({ fac, bob, carol, dave, late, bobAgain })) {
@@ -106,9 +115,12 @@ describe('F01-AC11: vote secrecy', () => {
       ...tokens,
       'Bobsecretname',
       'Carol',
+      'Carolrenamedsecret',
       'Dave',
+      'Late',
       'Topic w/ no votes',
       bob.token,
+      late.token,
       room.token,
     ]) {
       expect(all).not.toContain(secret);
@@ -471,26 +483,77 @@ describe('F01-AC23, AC24, AC25: removal, handover, claim', () => {
     });
     expect((await bob.waitForClose()).code).toBe(4403);
     expect(fac.state!.participants.map((p) => p.name)).toEqual(['Fac']);
-    // The old token is gone: reconnecting is invalid_token, then a fresh join works.
+    // The old token is tombstoned: reconnecting is `removed`, then a fresh join works.
     const again = await Client.connect(id);
     again.send({ type: 'rejoin', token: bob.token });
     await again.waitFor((m) => m.type === 'error');
-    expectCode(again.messages.at(-1)!, 'invalid_token');
+    expectCode(again.messages.at(-1)!, 'removed');
     const fresh = await Client.join(id, 'Bob');
     expect(fresh.participantId).not.toBe(bob.participantId);
     expect(fresh.state!.myVote).toBeNull();
   });
 
-  it('F01-AC23: removing an offline participant makes their token invalid', async () => {
+  const rejoinError = async (id: string, token: string) => {
+    const c = await Client.connect(id);
+    c.send({ type: 'rejoin', token });
+    await c.waitFor((m) => m.type === 'error');
+    return { msg: c.messages.at(-1)!, close: await c.waitForClose() };
+  };
+
+  it('F01-AC23/AC29: removed while offline, a rejoin gets removed (fatal, 4403), every time, even with room to spare', async () => {
     const { id, fac } = await setup();
     const bob = await Client.join(id, 'Bob');
     bob.close();
     await fac.waitForState((s) => s.participants[1]!.online === false);
     expectAck(await fac.cmd_({ type: 'remove_participant', participantId: bob.participantId }));
-    const c = await Client.connect(id);
-    c.send({ type: 'rejoin', token: bob.token });
-    await c.waitFor((m) => m.type === 'error');
-    expectCode(c.messages.at(-1)!, 'invalid_token');
+    for (let i = 0; i < 2; i++) {
+      const { msg, close } = await rejoinError(id, bob.token);
+      expectCode(msg, 'removed');
+      expect(msg).toMatchObject({ fatal: true });
+      expect(close.code).toBe(4403);
+    }
+    expect(fac.state!.participants.map((p) => p.name)).toEqual(['Fac']); // never admitted
+    // A fresh join works as before.
+    const fresh = await Client.join(id, 'Bob');
+    expect(fresh.participantId).not.toBe(bob.participantId);
+  });
+
+  it('F01-AC21/AC23: a purged participant still gets invalid_token (no tombstone)', async () => {
+    const { id, fac } = await setup();
+    await setTimers(id, { offlinePurgeMs: 200 });
+    const bob = await Client.join(id, 'Bob');
+    bob.close();
+    await fac.waitForState((s) => s.participants.length === 1, 3000);
+    expectCode((await rejoinError(id, bob.token)).msg, 'invalid_token');
+  });
+
+  it('F01-AC23: tombstones keep only hashes, are capped at the newest 200, and survive eviction', async () => {
+    const { id, fac } = await setup();
+    const bob = await Client.join(id, 'Bob');
+    expectAck(await fac.cmd_({ type: 'remove_participant', participantId: bob.participantId }));
+    const stub = getRoomStub(env, id);
+    const dump = await runInDurableObject(stub, (_i, state) => ({
+      tables: state.storage.sql
+        .exec<Record<string, string>>("SELECT sql FROM sqlite_master WHERE name = 'tombstones'")
+        .one()['sql'],
+    }));
+    expect(dump.tables).not.toMatch(/name|participant|display/i);
+    // Memory drop and real eviction keep the tombstone.
+    await api(`/api/__test/rooms/${id}/evict`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ mode: 'drop_memory' }),
+    });
+    await evictDurableObject(stub);
+    expectCode((await rejoinError(id, bob.token)).msg, 'removed');
+    // Cap: insert past the limit; the oldest (Bob's) falls back to invalid_token.
+    const count = await runInDurableObject(stub, (instance) => {
+      const store = (instance as unknown as { store: RoomStore }).store;
+      for (let i = 0; i < TOMBSTONE_MAX + 5; i++) store.addTombstone(`filler-${i}`, Date.now());
+      return store.tombstoneCount();
+    });
+    expect(count).toBe(TOMBSTONE_MAX);
+    expectCode((await rejoinError(id, bob.token)).msg, 'invalid_token');
   });
 
   it('F01-AC24: handover moves the role, keeps roles and votes; the old facilitator loses control', async () => {

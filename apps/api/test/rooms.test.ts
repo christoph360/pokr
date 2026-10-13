@@ -387,7 +387,7 @@ describe('malformed input on the socket', () => {
 });
 
 describe('F01-AC31: jurisdiction', () => {
-  it('rooms are reachable on later requests, and the ID differs from the bare namespace', async () => {
+  it('rooms created through the API are reachable on later requests and exist as Durable Objects (the jurisdiction ID assertions are in ops.test.ts)', async () => {
     const room = await createRoom();
     expect((await api(`/api/rooms/${room.roomId}`)).status).toBe(200);
     const ids = await listDurableObjectIds(env.ROOM);

@@ -74,8 +74,11 @@ be `join` or `rejoin`, within `JOIN_TIMEOUT_MS` (10 s), otherwise the server clo
    Full room: `error room_full` (fatal).
 2. **Rejoin** (token stored; also the creator right after `POST /api/rooms`): connect, send
    `{type:"rejoin", token}`. Server replies `joined {participantId}` then `state`. A valid token is
-   always admitted, even when the room is full. Unknown token (purged or removed): `error invalid_token`
-   (fatal): discard the token and show the name prompt (F01-AC5, AC23).
+   always admitted, even when the room is full. Unknown token (purged, or never valid): `error invalid_token`
+   (fatal): discard the token and show the name prompt (F01-AC5). A token of a participant who was removed
+   (also while offline) gets `error removed` (fatal, close 4403) on every `rejoin`, never admitted: discard the
+   token and show the removed screen (F01-AC23). The room keeps only the SHA-256 hash of the newest 200 removed
+   tokens; an older one falls back to `invalid_token`. A fresh `join` after removal works normally.
 3. Several tabs with one token are one participant; online while at least one connection is open.
 4. **Steady state**: every state change produces a full `state` message to every connection
    (projected per recipient), then the sender gets `ack {id, version}`.
@@ -146,25 +149,25 @@ connection closes. `rate_limited` keeps the connection open (F01-AC37).
 
 ### Error codes (stable; only ever added)
 
-| Code                    | Meaning                                                                |
-| ----------------------- | ---------------------------------------------------------------------- |
-| `not_allowed`           | Role or control mode doesn't permit it (AC13), incl. observer voting   |
-| `room_not_found`        | Malformed or never-created room (AC6). Terminal                        |
-| `room_full`             | 50 participants and not in the list (AC7). Terminal                    |
-| `round_revealed`        | Vote or withdraw after reveal                                          |
-| `confirmation_required` | Deck change discards votes and `confirmReset` was false (AC28)         |
-| `target_offline`        | Hand-over target not online (AC24)                                     |
-| `already_claimed`       | Another participant claimed first (AC25)                               |
-| `rate_limited`          | Limit exceeded (AC37); `retryAfterMs` set                              |
-| `invalid_input`         | Schema failure; `field` names the field (replaces `invalid_name` etc.) |
-| `removed`               | You were removed (AC23). Terminal                                      |
-| `invalid_card`          | Card not in the room's deck                                            |
-| `invalid_token`         | Unknown token; start a fresh join. Terminal                            |
-| `not_joined`            | Command before `join`/`rejoin`                                         |
-| `already_joined`        | Second `join`/`rejoin` on a connection                                 |
-| `unknown_target`        | `participantId` not in the room                                        |
-| `claim_not_available`   | Claim before `canClaimAt`, or the facilitator is online                |
-| `internal_error`        | Server fault                                                           |
+| Code                    | Meaning                                                                  |
+| ----------------------- | ------------------------------------------------------------------------ |
+| `not_allowed`           | Role or control mode doesn't permit it (AC13), incl. observer voting     |
+| `room_not_found`        | Malformed or never-created room (AC6). Terminal                          |
+| `room_full`             | 50 participants and not in the list (AC7). Terminal                      |
+| `round_revealed`        | Vote or withdraw after reveal                                            |
+| `confirmation_required` | Deck change discards votes and `confirmReset` was false (AC28)           |
+| `target_offline`        | Hand-over target not online (AC24)                                       |
+| `already_claimed`       | Another participant claimed first (AC25)                                 |
+| `rate_limited`          | Limit exceeded (AC37); `retryAfterMs` set                                |
+| `invalid_input`         | Schema failure; `field` names the field (replaces `invalid_name` etc.)   |
+| `removed`               | You were removed (AC23), also on `rejoin` with a removed token. Terminal |
+| `invalid_card`          | Card not in the room's deck                                              |
+| `invalid_token`         | Unknown token; start a fresh join. Terminal                              |
+| `not_joined`            | Command before `join`/`rejoin`                                           |
+| `already_joined`        | Second `join`/`rejoin` on a connection                                   |
+| `unknown_target`        | `participantId` not in the room                                          |
+| `claim_not_available`   | Claim before `canClaimAt`, or the facilitator is online                  |
+| `internal_error`        | Server fault                                                             |
 
 `invalid_input` messages describe the rule and never echo the input.
 

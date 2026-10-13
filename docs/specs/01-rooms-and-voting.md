@@ -147,7 +147,9 @@ This is the core loop. Every later feature builds on it.
   - All three durations are configurable in test mode.
 - **F01-AC22** Offline voters don't block auto-reveal (see AC16).
 - **F01-AC23** The facilitator can remove a participant. Removal deletes the participant, their
-  token, and, in `voting` state, their vote (after reveal, see AC18).
+  token, and, in `voting` state, their vote (after reveal, see AC18). The server keeps only a
+  hash of the removed token, with no name, until the room is deleted. A later rejoin with that
+  token is told "removed" (AC29) and is never admitted.
   - The removed client shows "you were removed from the room" and doesn't reconnect
     automatically.
   - Opening the link again or pressing "Rejoin" starts a fresh join with the name prompt.
@@ -185,7 +187,8 @@ This is the core loop. Every later feature builds on it.
   - On reconnect the client receives the full room state, including its own vote, and the
     indicator hides.
   - If the server reports the participant removed or the room not found, the client shows the
-    AC23 or AC6 screen instead.
+    AC23 or AC6 screen instead. This includes a participant who was removed while offline and
+    reconnects later.
 - **F01-AC30** After 10 s or more without messages, the room may be evicted from memory while
   connections stay open (hibernation). A message on an existing connection after eviction is
   processed with all room state intact: settings, topic, round state, votes, participants,
