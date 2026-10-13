@@ -48,6 +48,13 @@ type Fx = Array<() => void>;
 /** Two claims within this window of a successful claim answer `already_claimed` (F01-AC25). */
 const CLAIM_RACE_WINDOW_MS = 10_000;
 const OPEN = 1;
+/** Delays before retrying a transaction that hit a transient storage error (local workerd reports SQLITE_BUSY under load). */
+const BUSY_BACKOFF_MS = [5, 15, 40, 100];
+
+function isTransientStorageError(err: unknown): boolean {
+  const m = err instanceof Error ? err.message : '';
+  return /SQLITE_BUSY|database is locked/i.test(m);
+}
 /** After a clean close the participant stays online this long, so a reload does not flicker (F01-AC21). */
 const CLOSE_GRACE_MS = 400;
 
@@ -148,6 +155,8 @@ export class RoomDurableObject extends DurableObject<AppEnv> {
   private readonly msgTimes = new Map<WebSocket, number[]>();
   /** participantId -> time of their last clean close; lost on eviction (then offline is immediate, which is fine). */
   private readonly closing = new Map<string, number>();
+  /** Tail of the work queue. Everything that reads-modifies-writes room state runs through `enqueue`. */
+  private queue: Promise<unknown> = Promise.resolve();
   private readonly store: RoomStore;
 
   constructor(ctx: DurableObjectState, env: AppEnv) {
@@ -157,9 +166,26 @@ export class RoomDurableObject extends DurableObject<AppEnv> {
     ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair(PING_FRAME, PONG_FRAME));
   }
 
+  /**
+   * Runs `task` after all earlier tasks finished, in arrival order. A storage retry (which awaits a
+   * timer and so opens the input gate) therefore delays later messages instead of letting them
+   * overtake. A failed task does not break the chain. Tasks must never await another queued task
+   * (internal helpers such as `tick`, `commit` and `reschedule` are not queued), which rules out
+   * deadlock.
+   */
+  private enqueue<T>(task: () => Promise<T>): Promise<T> {
+    const result = this.queue.then(task);
+    this.queue = result.catch(() => undefined);
+    return result;
+  }
+
   // ---- RPC (called from the Worker through getRoomStub) ----
 
-  async create(input: CreateRoomInput): Promise<CreateRoomResult> {
+  create(input: CreateRoomInput): Promise<CreateRoomResult> {
+    return this.enqueue(() => this.createNow(input));
+  }
+
+  private async createNow(input: CreateRoomInput): Promise<CreateRoomResult> {
     if (this.store.exists()) return { ok: false, reason: 'exists' };
     const token = randomToken();
     const hash = await sha256Hex(token);
@@ -197,9 +223,13 @@ export class RoomDurableObject extends DurableObject<AppEnv> {
   }
 
   /** `null` for a room that was never created. Reads only: writes nothing for unknown rooms (F01-AC6). */
-  async info(): Promise<{ name: string; full: boolean } | null> {
+  info(): Promise<{ name: string; full: boolean } | null> {
+    return this.enqueue(() => this.infoNow());
+  }
+
+  private async infoNow(): Promise<{ name: string; full: boolean } | null> {
     if (!this.store.exists()) return null;
-    this.tick();
+    await this.tick();
     await this.reschedule();
     return {
       name: this.store.room().settings.name,
@@ -207,11 +237,15 @@ export class RoomDurableObject extends DurableObject<AppEnv> {
     };
   }
 
-  async testSetTimers(timers: TestTimersRequest): Promise<boolean> {
+  testSetTimers(timers: TestTimersRequest): Promise<boolean> {
+    return this.enqueue(() => this.testSetTimersNow(timers));
+  }
+
+  private async testSetTimersNow(timers: TestTimersRequest): Promise<boolean> {
     this.requireTestMode();
     if (!this.store.exists()) return false;
     this.store.setTimers({ ...this.store.room().timers, ...timers });
-    this.tick();
+    await this.tick();
     await this.reschedule();
     return true;
   }
@@ -238,7 +272,11 @@ export class RoomDurableObject extends DurableObject<AppEnv> {
 
   // ---- WebSocket upgrade ----
 
-  override async fetch(request: Request): Promise<Response> {
+  override fetch(request: Request): Promise<Response> {
+    return this.enqueue(() => this.fetchNow(request));
+  }
+
+  private async fetchNow(request: Request): Promise<Response> {
     if (!this.store.exists()) {
       return Response.json({ error: { code: 'room_not_found' } }, { status: 404 });
     }
@@ -260,12 +298,16 @@ export class RoomDurableObject extends DurableObject<AppEnv> {
   // ---- Hibernation handlers ----
 
   override async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
-    const now = Date.now();
-    this.lastSeen.set(ws, now);
+    this.lastSeen.set(ws, Date.now());
     if (message === PING_FRAME) {
       this.send(ws, { type: 'pong' });
       return;
     }
+    return this.enqueue(() => this.onMessage(ws, message));
+  }
+
+  private async onMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
+    const now = Date.now();
     const raw = typeof message === 'string' ? message : null;
     const retryAfterMs = this.rateCheck(ws, now);
     if (retryAfterMs !== null) {
@@ -301,14 +343,11 @@ export class RoomDurableObject extends DurableObject<AppEnv> {
       if (msg.type === 'ping') {
         this.send(ws, { type: 'pong' });
       } else if (msg.type === 'join' || msg.type === 'rejoin') {
-        // A throw inside blockConcurrencyWhile resets the object, so failures are handled inside it.
-        await this.ctx.blockConcurrencyWhile(async () => {
-          try {
-            await this.handshake(ws, msg);
-          } catch (err) {
-            this.handleFailure(ws, err);
-          }
-        });
+        try {
+          await this.handshake(ws, msg);
+        } catch (err) {
+          this.handleFailure(ws, err);
+        }
       } else {
         await this.command(ws, msg);
       }
@@ -321,6 +360,10 @@ export class RoomDurableObject extends DurableObject<AppEnv> {
   override async webSocketClose(ws: WebSocket, code: number): Promise<void> {
     this.noteClose(ws);
     this.forget(ws);
+    return this.enqueue(() => this.onClose(ws, code));
+  }
+
+  private async onClose(ws: WebSocket, code: number): Promise<void> {
     const valid = code >= 1000 && code < 5000 && ![1004, 1005, 1006, 1015].includes(code);
     try {
       ws.close(valid ? code : 1000, 'closing');
@@ -328,7 +371,7 @@ export class RoomDurableObject extends DurableObject<AppEnv> {
       /* already closed */
     }
     try {
-      this.tick(ws);
+      await this.tick(ws);
     } catch (err) {
       logError('close_failed', err);
     }
@@ -338,8 +381,12 @@ export class RoomDurableObject extends DurableObject<AppEnv> {
   override async webSocketError(ws: WebSocket): Promise<void> {
     this.noteClose(ws);
     this.forget(ws);
+    return this.enqueue(() => this.onError(ws));
+  }
+
+  private async onError(ws: WebSocket): Promise<void> {
     try {
-      this.tick(ws);
+      await this.tick(ws);
     } catch (err) {
       logError('socket_error_failed', err);
     }
@@ -348,8 +395,12 @@ export class RoomDurableObject extends DurableObject<AppEnv> {
 
   /** One alarm multiplexes heartbeat expiry, join timeouts, purge, and claim availability. */
   override async alarm(): Promise<void> {
+    return this.enqueue(() => this.onAlarm());
+  }
+
+  private async onAlarm(): Promise<void> {
     try {
-      this.tick();
+      await this.tick();
       const room = this.store.room();
       const fac = this.store.participant(room.facilitatorId);
       if (fac && fac.offline_since !== null && room.claimPushed !== fac.offline_since) {
@@ -454,7 +505,7 @@ export class RoomDurableObject extends DurableObject<AppEnv> {
   }
 
   /** Housekeeping: heartbeat expiry, join timeout, presence sync, due purges. Cheap when nothing changed. */
-  private tick(except?: WebSocket): void {
+  private async tick(except?: WebSocket): Promise<void> {
     const now = Date.now();
     const room = this.store.room();
     const d = this.durations(room);
@@ -475,7 +526,7 @@ export class RoomDurableObject extends DurableObject<AppEnv> {
     const onlineIds = new Set(
       live.map((ws) => this.attachment(ws).pid).filter((p): p is string => !!p),
     );
-    this.commit(() => {
+    await this.commit(() => {
       for (const p of this.store.participants()) {
         const online = onlineIds.has(p.id);
         const closedAt = this.closing.get(p.id);
@@ -512,7 +563,27 @@ export class RoomDurableObject extends DurableObject<AppEnv> {
     }
   }
 
+  /**
+   * Re-arms the multiplexed alarm. Never throws: a failing alarm call must not fail a committed
+   * command. One retry, then an ID-only log. Every entry point calls this again, so a lost alarm
+   * is re-armed by the next message, connect or close.
+   */
   private async reschedule(): Promise<void> {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        await this.rescheduleOnce();
+        return;
+      } catch (err) {
+        if (attempt === 1) {
+          logError('reschedule_failed', err, { roomId: this.safeRoomId() });
+          return;
+        }
+        await new Promise((r) => setTimeout(r, 25));
+      }
+    }
+  }
+
+  private async rescheduleOnce(): Promise<void> {
     if (!this.store.exists()) return;
     const sockets = this.liveSockets();
     const current = await this.ctx.storage.getAlarm();
@@ -574,23 +645,48 @@ export class RoomDurableObject extends DurableObject<AppEnv> {
    * Runs `fn` atomically. The room version is bumped exactly once if anything visible changed, then
    * `pre` runs, the new state is broadcast, and the queued effects run (F01-AC14, AC16).
    */
-  private commit<T>(fn: (fx: Fx) => T, pre?: () => void): { result: T; changed: boolean } {
+  private async commit<T>(
+    fn: (fx: Fx) => T,
+    pre?: () => void,
+  ): Promise<{ result: T; changed: boolean; version: number }> {
+    // Only the transaction is retried: it rolls back completely on failure, so a retry cannot
+    // double-apply. Everything after it (broadcast, effects) runs once.
+    let attempt = 0;
+    let out: { result: T; changed: boolean; version: number; fx: Fx };
+    for (;;) {
+      try {
+        out = this.transact(fn);
+        break;
+      } catch (err) {
+        if (!isTransientStorageError(err) || attempt >= BUSY_BACKOFF_MS.length) throw err;
+        log('storage_busy_retry', { count: attempt + 1 });
+        await new Promise((r) => setTimeout(r, BUSY_BACKOFF_MS[attempt]));
+        attempt++;
+      }
+    }
+    pre?.();
+    if (out.changed) this.broadcast();
+    for (const f of out.fx) f();
+    return { result: out.result, changed: out.changed, version: out.version };
+  }
+
+  private transact<T>(fn: (fx: Fx) => T): { result: T; changed: boolean; version: number; fx: Fx } {
     const fx: Fx = [];
     let changed = false;
+    let version = 0;
     const result = this.ctx.storage.transactionSync(() => {
       const before = this.fingerprint();
       const r = fn(fx);
       this.autoReveal();
+      version = this.store.room().version;
       if (this.fingerprint() !== before) {
-        this.store.setVersion(this.store.room().version + 1);
+        version += 1;
+        this.store.setVersion(version);
         changed = true;
       }
       return r;
     });
-    pre?.();
-    if (changed) this.broadcast();
-    for (const f of fx) f();
-    return { result, changed };
+    return { result, changed, version, fx };
   }
 
   private autoReveal(): void {
@@ -666,6 +762,15 @@ export class RoomDurableObject extends DurableObject<AppEnv> {
   }
 
   private broadcast(): void {
+    try {
+      this.broadcastNow();
+    } catch (err) {
+      // The change is committed; clients resync on their next message or reconnect.
+      logError('broadcast_failed', err);
+    }
+  }
+
+  private broadcastNow(): void {
     const room = this.store.room();
     const parts = this.store.participants();
     const left = this.store.left();
@@ -686,6 +791,23 @@ export class RoomDurableObject extends DurableObject<AppEnv> {
       } catch {
         /* gone */
       }
+    }
+  }
+
+  /** Post-commit: a failing read must not turn a committed command into an error; the client resyncs on the next state. */
+  private sendStateSafe(ws: WebSocket, pid: string): void {
+    try {
+      this.sendState(ws, pid);
+    } catch (err) {
+      logError('send_state_failed', err);
+    }
+  }
+
+  private safeRoomId(): string {
+    try {
+      return this.store.room().roomId;
+    } catch {
+      return '';
     }
   }
 
@@ -711,9 +833,9 @@ export class RoomDurableObject extends DurableObject<AppEnv> {
     } else {
       hash = await sha256Hex(msg.token);
     }
-    this.tick();
+    await this.tick();
     let pid = '';
-    const { changed } = this.commit(
+    const { changed } = await this.commit(
       () => {
         if (msg.type === 'join') {
           const parts = this.store.participants();
@@ -752,10 +874,10 @@ export class RoomDurableObject extends DurableObject<AppEnv> {
       },
     );
     log(msg.type === 'join' ? 'participant_joined' : 'participant_rejoined', {
-      roomId: this.store.room().roomId,
+      roomId: this.safeRoomId(),
       participantId: pid,
     });
-    if (!changed) this.sendState(ws, pid);
+    if (!changed) this.sendStateSafe(ws, pid);
   }
 
   // ---- commands ----
@@ -763,10 +885,10 @@ export class RoomDurableObject extends DurableObject<AppEnv> {
   private async command(ws: WebSocket, msg: CommandMessage): Promise<void> {
     const pid = this.attachment(ws).pid;
     if (!pid) throw new CommandError('not_joined', 'send join or rejoin first');
-    this.tick();
-    const { changed } = this.commit((fx) => this.execute(pid, msg, fx));
-    if (!changed) this.sendState(ws, pid);
-    this.send(ws, { type: 'ack', id: msg.id, version: this.store.room().version });
+    await this.tick();
+    const { changed, version } = await this.commit((fx) => this.execute(pid, msg, fx));
+    if (!changed) this.sendStateSafe(ws, pid);
+    this.send(ws, { type: 'ack', id: msg.id, version });
   }
 
   private execute(pid: string, msg: CommandMessage, fx: Fx): void {
