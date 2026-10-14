@@ -301,7 +301,7 @@ Never in logs or KV.
 
 - `POST /api/__test/rooms/:roomId/stories` `TestSeedStoriesRequest` -> 201 `{storyIds, version}` (QA H1 and H4).
   Appends `count` stories (`Story 001 ` + filler), with optional `titleLength`, `descriptionLength`, `linkLength`
-  (exact), `emoji` (4-byte filler), `estimated` (first N get a deck card and a final round of `finalRoundVotes`
+  (exact from 13 characters up: `https://a.bc/` plus `a`s), `emoji` (4-byte filler), `estimated` (first N get a deck card and a final round of `finalRoundVotes`
   synthetic voters, default 3), `skipped` (the next N). Skips the message rate limit, keeps the 200 cap
   (`409 story_limit_reached`, nothing added). Bumps the version and broadcasts like a normal add.
 - `GET /api/__test/rooms/:roomId/storage` -> `{entries: [{key, bytes}], totalBytes, finalRounds: [{storyId, finalRound}]}`
@@ -329,3 +329,18 @@ stories 200 per room, 100 per bulk add, title 1-200, description <= 5,000, link 
 - Join limit (120/min/IP) counts only the WebSocket upgrade (so reconnects count). `GET /api/rooms/:id` is not limited by the binding.
 - A clean close marks the participant offline after a ~400 ms grace period, unless a connection with the same token arrives first (page reloads cause no offline flicker). Offline is still shown within 1 s.
 - Join timeout: a socket that sends nothing for `JOIN_TIMEOUT_MS` is closed with 4408, enforced server-side (`joinTimeoutMs` in the timers hook shortens it). Enforced by the alarm; the server socket is closed on time. Local `wrangler dev` quirk: if the client has sent no frame at all, workerd completes the close handshake to the peer only when the object is evicted, about 10 s later, so a silent client sees the `close` event at roughly 2x the timeout (no error frame is sent). A client that has sent anything (even a ping) sees it promptly. Allow 25 s, or send a ping first.
+
+### F02 server behavior notes (apps/api)
+
+- Story IDs are 12 lowercase Crockford base32 characters. Storage: table `stories` (one row per story, sparse
+  integer `position` 1024 apart; a move writes one row, the list is renumbered only when a gap is used up) and
+  `story_meta` (`active_story_id`, `accepted_round`, `agenda_version`). Rooms stored before F02 get both lazily;
+  a missing `storySource` reads as `"topic"`.
+- Final rounds are cached nowhere on the server. A client that caches `get_story` results must not cache
+  `finalRound` across participant removals (the server nulls the name without bumping `rev` or `agendaVersion`);
+  refetch when the detail is opened.
+- Purged (not removed) participants keep their names in snapshots; only `remove_participant` anonymizes.
+- A no-op story command (select the active story, move to the same place, an edit that changes nothing) answers
+  with the sender's `state` (without agenda) and `ack` at the same version.
+- Unknown or unsupported command types are `invalid_input` (schema) and never silently ignored.
+- Stress: `pnpm --filter @pokr/api stress` runs both the vote burst and the story scenario (`--scenario votes|stories`).

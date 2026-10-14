@@ -15,12 +15,20 @@
  *   pnpm --filter @pokr/api stress -- --rooms 5 --clients 30 --votes 15
  *   pnpm --filter @pokr/api stress -- --url https://staging.example --rooms 1   # staging: needs POKR_TEST_MODE too
  *
+ * Scenarios (--scenario all|votes|stories, default all): `votes` is the burst above; `stories` (F02) runs
+ * per room two facilitator tabs with the same token plus voters: concurrent add_story from both tabs,
+ * then concurrent move, select, next, reveal and accept while the voters vote. Races such as
+ * stale_round or confirmation_required are legitimate answers; internal_error, out-of-order answers,
+ * an agenda frame that would need a resync, and tabs that end with different agendas are failures.
+ *
  * Options: --url (default http://localhost:8787), --rooms (3), --clients per room incl. the
  * facilitator (20, max 50), --votes per client (10, max 18: the per-connection limit is 20
  * messages per 10 s), --timeout ms per wait (10000). Exit code 0 = pass, 1 = fail.
  * Stop the dev server when done. The script creates rooms; it never deletes them (they expire).
  */
 import type { ClientMessage, RoomState, ServerMessage } from '@pokr/shared';
+
+type AgendaRow = NonNullable<RoomState['stories']['agenda']>['rows'][number];
 
 // Node provides these; the Workers typings used by this package do not.
 declare const process: { argv: string[]; exit(code: number): never };
@@ -31,6 +39,13 @@ interface Options {
   clients: number;
   votes: number;
   timeout: number;
+  scenario: 'all' | 'votes' | 'stories';
+}
+
+function scenario(value: string | undefined): Options['scenario'] {
+  if (value === undefined || value === 'all') return 'all';
+  if (value === 'votes' || value === 'stories') return value;
+  return fail('--scenario must be all, votes or stories');
 }
 
 function parseOptions(argv: string[]): Options {
@@ -47,7 +62,7 @@ function parseOptions(argv: string[]): Options {
     return n;
   };
   for (const key of raw.keys()) {
-    if (!['url', 'rooms', 'clients', 'votes', 'timeout'].includes(key))
+    if (!['url', 'rooms', 'clients', 'votes', 'timeout', 'scenario'].includes(key))
       fail(`unknown option --${key}`);
   }
   return {
@@ -56,6 +71,7 @@ function parseOptions(argv: string[]): Options {
     clients: num('clients', 20, 50),
     votes: num('votes', 10, 18),
     timeout: num('timeout', 10_000, 120_000),
+    scenario: scenario(raw.get('scenario')),
   };
 }
 
@@ -83,6 +99,10 @@ class Conn {
   participantId = '';
   token = '';
   lastVote: string | null = null;
+  /** Error codes that are a legitimate answer in the current phase (races between commands). */
+  allowed = new Set<string>();
+  /** Agenda as the client rule keeps it (see mergeAgenda in @pokr/shared). */
+  held: { version: number; rows: AgendaRow[] } | null = null;
   readonly acks: string[] = [];
   private readonly pending = new Map<string, { sentAt: number; resolve: () => void }>();
   private readonly sendOrder: string[] = [];
@@ -131,6 +151,7 @@ class Conn {
         }
         this.lastVersion = Math.max(this.lastVersion, msg.state.version);
         this.state = msg.state;
+        this.trackAgenda(msg.state);
         break;
       case 'ack':
       case 'error':
@@ -160,10 +181,22 @@ class Conn {
     const expected = this.sendOrder.shift();
     if (expected !== id) problem(`${this.label}: answer for ${id} overtook ${expected}`);
     if (errorCode === 'internal_error') problem(`${this.label}: internal_error answering ${id}`);
-    else if (errorCode !== null && errorCode !== 'rate_limited') {
+    else if (errorCode !== null && errorCode !== 'rate_limited' && !this.allowed.has(errorCode)) {
       problem(`${this.label}: unexpected ${errorCode} answering ${id}`);
     }
     entry.resolve();
+  }
+
+  private trackAgenda(state: RoomState): void {
+    const st = state.stories;
+    if (st.agenda) this.held = { version: st.agendaVersion, rows: st.agenda.rows };
+    else if (!this.held || this.held.version !== st.agendaVersion) {
+      problem(
+        `${this.label}: state without agenda for version ${st.agendaVersion} (held ${this.held?.version})`,
+      );
+    } else if (st.agendaVersion < this.held.version) {
+      problem(`${this.label}: agendaVersion went backwards`);
+    }
   }
 
   /** Send without waiting; the returned promise settles when the command is answered. */
@@ -196,11 +229,13 @@ class Conn {
   }
 }
 
-async function createRoom(): Promise<{ roomId: string; token: string }> {
+async function createRoom(
+  settings: Record<string, unknown> = {},
+): Promise<{ roomId: string; token: string }> {
   const res = await fetch(`${opts.url}/api/rooms`, {
     method: 'POST',
     headers: { 'content-type': 'application/json', 'x-pokr-test-client-key': freshKey() },
-    body: JSON.stringify({ displayName: 'Facilitator' }),
+    body: JSON.stringify({ displayName: 'Facilitator', settings }),
   });
   if (res.status !== 201) {
     throw new Error(
@@ -270,6 +305,107 @@ async function runRoom(index: number): Promise<void> {
   conns.forEach((c) => c.close());
 }
 
+/** Races between concurrent story commands are legitimate answers, internal_error never is. */
+const STORY_RACE_CODES = [
+  'stale_round',
+  'confirmation_required',
+  'no_next_story',
+  'round_not_revealed',
+  'invalid_story_state',
+  'no_active_story',
+  'unknown_story',
+  'round_revealed',
+];
+
+const pick = <T>(list: T[]): T => list[Math.floor(Math.random() * list.length)]!;
+
+/**
+ * Story list scenario (F02): two facilitator tabs (same token) and voters. Concurrent adds, then
+ * concurrent moves, select, Next, reveal and accept from both tabs while the voters vote. Checks
+ * the same properties as the vote burst plus: agenda frames stay in sync (the client rule never
+ * needs a resync), all connections end with the same agenda, story ids are unique, and the
+ * progress counter matches the rows.
+ */
+async function runStoryRoom(index: number): Promise<void> {
+  const { roomId, token } = await createRoom({ storySource: 'stories' });
+  const label = (n: string) => `s${index}${n}`;
+  const open = async (name: string, join: boolean) => {
+    const conn = await Conn.open(label(name), roomId);
+    conn.allowed = new Set(STORY_RACE_CODES);
+    if (join) conn.send({ type: 'join', name: `Voter ${name}`, role: 'voter' });
+    else conn.send({ type: 'rejoin', token });
+    await conn.waitFor(() => conn.state !== null && conn.held !== null, 'first state');
+    return conn;
+  };
+  const tabA = await open('A', false);
+  const tabB = await open('B', false);
+  const voters = await Promise.all(
+    Array.from({ length: Math.max(1, opts.clients - 2) }, (_, n) => open(`v${n}`, true)),
+  );
+  const tabs = [tabA, tabB];
+  const adds = Math.min(8, Math.floor(opts.votes));
+
+  // 1. Both tabs add at the same time.
+  await Promise.all(
+    tabs.flatMap((tab, t) =>
+      Array.from({ length: adds }, (_, k) =>
+        tab.command({ type: 'add_story', title: `Story ${t}-${k}` }),
+      ),
+    ),
+  );
+  await tabA.waitFor(() => tabA.held!.rows.length === adds * 2, 'all stories added');
+
+  // 2. Moves, select, Next, reveal and accept from both tabs, while voters vote.
+  const ids = tabA.held!.rows.map((r) => r.id);
+  await tabA.command({ type: 'select_story', storyId: ids[0]! }); // a round to vote in
+  const work: Promise<void>[] = [];
+  for (const tab of tabs) {
+    for (let k = 0; k < 5; k++) {
+      work.push(
+        tab.command({ type: 'move_story', storyId: pick(ids), beforeId: pick([...ids, null]) }),
+      );
+    }
+    const round = () => tab.state!.round.number;
+    work.push(tab.command({ type: 'select_story', storyId: pick(ids), confirmReset: true }));
+    work.push(tab.command({ type: 'next_story', round: round(), confirmReset: true }));
+    work.push(tab.command({ type: 'reveal' }));
+    work.push(
+      tab.command({
+        type: 'accept_estimate',
+        storyId: tab.state!.stories.activeId ?? ids[0]!,
+        round: round(),
+        estimate: pick(CARDS),
+      }),
+    );
+  }
+  for (const voter of voters) {
+    for (let k = 0; k < Math.min(opts.votes, 6); k++) {
+      work.push(voter.command({ type: 'vote', card: CARDS[k % CARDS.length]! }));
+    }
+  }
+  await Promise.all(work);
+
+  // 3. Everyone converges on one version and one agenda.
+  const everyone = [...tabs, ...voters];
+  const target = Math.max(...everyone.map((c) => c.state!.version));
+  await Promise.all(
+    everyone.map((c) => c.waitFor(() => c.state!.version === target, 'same version')),
+  );
+  const fingerprint = (c: Conn) =>
+    JSON.stringify([c.held!.version, c.held!.rows, c.state!.stories.activeId]);
+  const expected = fingerprint(tabA);
+  for (const c of everyone) {
+    if (fingerprint(c) !== expected) problem(`${c.label}: agenda differs from tab A`);
+  }
+  const rows = tabA.held!.rows;
+  if (new Set(rows.map((r) => r.id)).size !== rows.length) problem('duplicate story ids');
+  if (rows.length !== adds * 2) problem(`expected ${adds * 2} stories, found ${rows.length}`);
+  const estimated = rows.filter((r) => r.estimate !== null).length;
+  if (tabA.state!.stories.progress.estimated !== estimated)
+    problem('progress does not match the rows');
+  everyone.forEach((c) => c.close());
+}
+
 function percentile(sorted: number[], p: number): number {
   return sorted.length === 0
     ? 0
@@ -280,7 +416,12 @@ const started = Date.now();
 console.log(
   `stress: ${opts.rooms} rooms x ${opts.clients} clients x ${opts.votes} votes against ${opts.url}`,
 );
-const results = await Promise.allSettled(Array.from({ length: opts.rooms }, (_, i) => runRoom(i)));
+const scenarios: Promise<void>[] = [];
+for (let i = 0; i < opts.rooms; i++) {
+  if (opts.scenario !== 'stories') scenarios.push(runRoom(i));
+  if (opts.scenario !== 'votes') scenarios.push(runStoryRoom(i));
+}
+const results = await Promise.allSettled(scenarios);
 for (const r of results) {
   if (r.status === 'rejected')
     problem(String(r.reason instanceof Error ? r.reason.message : r.reason));

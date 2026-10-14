@@ -8,6 +8,7 @@ import {
   MAX_MESSAGE_CHARS,
   RATE_LIMITS,
   TestEvictRequestSchema,
+  TestSeedStoriesRequestSchema,
   TestTimersRequestSchema,
   applySettings,
   generateRoomId,
@@ -150,6 +151,23 @@ testApp.get('/rooms/:roomId/instance', async (c) => {
   const roomId = normalizeRoomId(c.req.param('roomId'));
   if (!roomId) return errorResponse(c, 'room_not_found');
   return c.json({ instanceId: await getRoomStub(c.env, roomId).testInstance() });
+});
+
+testApp.post('/rooms/:roomId/stories', async (c) => {
+  const roomId = normalizeRoomId(c.req.param('roomId'));
+  if (!roomId) return errorResponse(c, 'room_not_found');
+  const body = v.safeParse(TestSeedStoriesRequestSchema, await c.req.json().catch(() => null));
+  if (!body.success) return errorResponse(c, 'invalid_input', { message: 'invalid seed request' });
+  const result = await getRoomStub(c.env, roomId).testSeedStories(body.output);
+  if ('error' in result) return errorResponse(c, result.error);
+  return c.json(result, 201);
+});
+
+testApp.get('/rooms/:roomId/storage', async (c) => {
+  const roomId = normalizeRoomId(c.req.param('roomId'));
+  if (!roomId) return errorResponse(c, 'room_not_found');
+  const report = await getRoomStub(c.env, roomId).testStorage();
+  return report ? c.json(report) : errorResponse(c, 'room_not_found');
 });
 
 const guard = async (c: Ctx, next: () => Promise<void>) => {

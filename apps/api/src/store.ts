@@ -1,4 +1,4 @@
-import type { Role, RoomSettings } from '@pokr/shared';
+import type { FinalRound, Role, RoomSettings } from '@pokr/shared';
 
 /** SQLite persistence for one room. Stateless: every call reads storage (AC30). */
 
@@ -35,6 +35,42 @@ export interface ParticipantRow {
   offline_since: number | null;
 }
 
+/** One story. Positions are sparse (STORY_POSITION_STEP apart) so a move writes one row. */
+export interface StoryRow {
+  id: string;
+  position: number;
+  title: string;
+  description: string;
+  link: string | null;
+  status: 'pending' | 'estimated' | 'skipped';
+  estimate: string | null;
+  rev: number;
+  /** Reserved for F05/F06 (JSON), always null in F02. */
+  tracker: string | null;
+  /** JSON of FinalRound, replaced on every accept; names are nulled when a participant is removed. */
+  final_round: string | null;
+}
+
+/** The agenda row as broadcast: no description, no final round. */
+export interface StoryLightRow {
+  id: string;
+  title: string;
+  link: string | null;
+  has_description: number;
+  status: StoryRow['status'];
+  estimate: string | null;
+  rev: number;
+  tracker: string | null;
+}
+
+export interface StoryMeta {
+  activeId: string | null;
+  acceptedRound: number | null;
+  agendaVersion: number;
+}
+
+export const STORY_POSITION_STEP = 1024;
+
 export interface LeftRow {
   participant_id: string;
   name: string;
@@ -56,6 +92,9 @@ const PARTICIPANT_COLUMNS = new Set([
 ]);
 
 export class RoomStore {
+  /** True once the F02 tables are known to exist for this instance. */
+  private storiesReady = false;
+
   constructor(private readonly sql: SqlStorage) {}
 
   /** Read-only check; creates nothing (F01-AC6). */
@@ -79,6 +118,7 @@ export class RoomStore {
     this.sql.exec(`CREATE TABLE left_votes (
       participant_id TEXT PRIMARY KEY, name TEXT NOT NULL, card TEXT NOT NULL)`);
     this.ensureTombstones();
+    this.createStoryTables();
     this.sql.exec(
       'INSERT INTO room VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
       room.roomId,
@@ -93,6 +133,24 @@ export class RoomStore {
       room.claimPushed,
       room.lastClaimAt,
     );
+  }
+
+  private createStoryTables(): void {
+    this.sql.exec(`CREATE TABLE IF NOT EXISTS stories (
+      id TEXT PRIMARY KEY, position INTEGER NOT NULL, title TEXT NOT NULL,
+      description TEXT NOT NULL, link TEXT, status TEXT NOT NULL, estimate TEXT,
+      rev INTEGER NOT NULL, tracker TEXT, final_round TEXT)`);
+    this.sql.exec('CREATE INDEX IF NOT EXISTS stories_position ON stories (position)');
+    this.sql.exec(`CREATE TABLE IF NOT EXISTS story_meta (
+      id INTEGER PRIMARY KEY CHECK (id = 1), active_story_id TEXT, accepted_round INTEGER,
+      agenda_version INTEGER NOT NULL)`);
+    this.sql.exec('INSERT OR IGNORE INTO story_meta VALUES (1, NULL, NULL, 0)');
+    this.storiesReady = true;
+  }
+
+  /** Rooms stored before F02 get the tables on first use. Only called for rooms that exist (F01-AC6 writes nothing otherwise). */
+  private ensureStories(): void {
+    if (!this.storiesReady) this.createStoryTables();
   }
 
   /** Token hashes of removed participants (hash + time only, no personal data). Also created lazily for older rooms. */
@@ -125,7 +183,11 @@ export class RoomStore {
     const r = this.sql.exec<Row>('SELECT * FROM room WHERE id = 1').one();
     return {
       roomId: r['room_id'] as string,
-      settings: JSON.parse(r['settings'] as string) as RoomSettings,
+      // Rooms stored before F02 have no storySource: explicit default.
+      settings: (() => {
+        const stored = JSON.parse(r['settings'] as string) as Partial<RoomSettings>;
+        return { ...stored, storySource: stored.storySource ?? 'topic' } as RoomSettings;
+      })(),
       topic: r['topic'] as string,
       phase: r['phase'] as 'voting' | 'revealed',
       roundNumber: r['round_number'] as number,
@@ -235,5 +297,199 @@ export class RoomStore {
   }
   clearLeft(): void {
     this.sql.exec('DELETE FROM left_votes');
+  }
+
+  // ---- stories (F02) ----
+
+  storyMeta(): StoryMeta {
+    this.ensureStories();
+    const r = this.sql.exec<Row>('SELECT * FROM story_meta WHERE id = 1').one();
+    return {
+      activeId: r['active_story_id'] as string | null,
+      acceptedRound: r['accepted_round'] as number | null,
+      agendaVersion: r['agenda_version'] as number,
+    };
+  }
+  /** Every mutator below calls this, so `agenda_version` changes whenever the broadcast agenda block would. */
+  private bumpAgenda(): void {
+    this.sql.exec('UPDATE story_meta SET agenda_version = agenda_version + 1 WHERE id = 1');
+  }
+  storyCount(): number {
+    this.ensureStories();
+    return this.sql.exec<Row>('SELECT COUNT(*) AS n FROM stories').one()['n'] as number;
+  }
+  /** In agenda order, all columns. */
+  stories(): StoryRow[] {
+    this.ensureStories();
+    return this.sql
+      .exec<Row>('SELECT * FROM stories ORDER BY position, rowid')
+      .toArray() as unknown as StoryRow[];
+  }
+  /** In agenda order, without description and final round (the broadcast rows). */
+  storiesLight(): StoryLightRow[] {
+    this.ensureStories();
+    return this.sql
+      .exec<Row>(
+        `SELECT id, title, link, (description != '') AS has_description, status, estimate, rev, tracker
+         FROM stories ORDER BY position, rowid`,
+      )
+      .toArray() as unknown as StoryLightRow[];
+  }
+  story(id: string): StoryRow | undefined {
+    this.ensureStories();
+    return this.sql.exec<Row>('SELECT * FROM stories WHERE id = ?', id).toArray()[0] as unknown as
+      StoryRow | undefined;
+  }
+  /** Position after the last story. */
+  private endPosition(): number {
+    const r = this.sql.exec<Row>('SELECT MAX(position) AS p FROM stories').one()['p'];
+    return typeof r === 'number' ? r + STORY_POSITION_STEP : STORY_POSITION_STEP;
+  }
+  /** Appends a story; returns its position. */
+  appendStory(row: Omit<StoryRow, 'position'>): void {
+    this.ensureStories();
+    this.sql.exec(
+      'INSERT INTO stories VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      row.id,
+      this.endPosition(),
+      row.title,
+      row.description,
+      row.link,
+      row.status,
+      row.estimate,
+      row.rev,
+      row.tracker,
+      row.final_round,
+    );
+    this.bumpAgenda();
+  }
+  updateStory(
+    id: string,
+    patch: Partial<
+      Pick<
+        StoryRow,
+        'title' | 'description' | 'link' | 'status' | 'estimate' | 'rev' | 'final_round'
+      >
+    >,
+  ): void {
+    const allowed = new Set([
+      'title',
+      'description',
+      'link',
+      'status',
+      'estimate',
+      'rev',
+      'final_round',
+    ]);
+    const entries = Object.entries(patch).filter(([k, v]) => allowed.has(k) && v !== undefined);
+    if (entries.length === 0) return;
+    const set = entries.map(([k]) => `${k} = ?`).join(', '); // keys come from the whitelist above
+    this.sql.exec(
+      `UPDATE stories SET ${set} WHERE id = ?`,
+      ...entries.map(([, v]) => v as SqlStorageValue),
+      id,
+    );
+    this.bumpAgenda();
+  }
+  deleteStory(id: string): void {
+    this.sql.exec('DELETE FROM stories WHERE id = ?', id);
+    this.bumpAgenda();
+  }
+  /**
+   * Places `id` directly before `beforeId` (null = end). One row is written unless the gap between
+   * the neighbours is used up, then the whole list is renumbered (at most 200 rows, rare).
+   */
+  moveStory(id: string, beforeId: string | null): void {
+    const others = this.stories()
+      .filter((s) => s.id !== id)
+      .map((s) => ({ id: s.id, position: s.position }));
+    const at = beforeId === null ? others.length : others.findIndex((s) => s.id === beforeId);
+    const prev = at > 0 ? others[at - 1]!.position : 0;
+    const next = at < others.length ? others[at]!.position : prev + 2 * STORY_POSITION_STEP;
+    if (next - prev >= 2) {
+      this.sql.exec(
+        'UPDATE stories SET position = ? WHERE id = ?',
+        prev + Math.floor((next - prev) / 2),
+        id,
+      );
+    } else {
+      const order = [
+        ...others.slice(0, at).map((s) => s.id),
+        id,
+        ...others.slice(at).map((s) => s.id),
+      ];
+      order.forEach((sid, i) =>
+        this.sql.exec(
+          'UPDATE stories SET position = ? WHERE id = ?',
+          (i + 1) * STORY_POSITION_STEP,
+          sid,
+        ),
+      );
+    }
+    this.bumpAgenda();
+  }
+  /** Sets the active story. Bumps the agenda version only if something changed. */
+  setActive(activeId: string | null, acceptedRound: number | null): void {
+    const m = this.storyMeta();
+    if (m.activeId === activeId && m.acceptedRound === acceptedRound) return;
+    this.sql.exec(
+      'UPDATE story_meta SET active_story_id = ?, accepted_round = ? WHERE id = 1',
+      activeId,
+      acceptedRound,
+    );
+    this.bumpAgenda();
+  }
+  /** F02-AC11: a removed participant's name is erased from every final-round snapshot; the vote stays. */
+  anonymizeFinalRounds(participantId: string): void {
+    this.ensureStories();
+    const rows = this.sql
+      .exec<Row>('SELECT id, final_round FROM stories WHERE final_round IS NOT NULL')
+      .toArray();
+    for (const r of rows) {
+      const fr = JSON.parse(r['final_round'] as string) as FinalRound;
+      let touched = false;
+      for (const vote of fr.votes) {
+        if (vote.participantId === participantId && vote.name !== null) {
+          vote.name = null;
+          touched = true;
+        }
+      }
+      if (touched) {
+        this.sql.exec(
+          'UPDATE stories SET final_round = ? WHERE id = ?',
+          JSON.stringify(fr),
+          r['id'] as string,
+        );
+      }
+    }
+  }
+
+  /** Test hook H2: every persisted row with its serialized size. Never includes values. */
+  storageReport(): { key: string; bytes: number }[] {
+    const enc = new TextEncoder();
+    const out: { key: string; bytes: number }[] = [];
+    const tables = this.sql
+      .exec<Row>("SELECT name FROM sqlite_master WHERE type = 'table'")
+      .toArray()
+      .map((t) => t['name'] as string)
+      .filter((name) => !name.startsWith('sqlite_') && !name.startsWith('_cf_'));
+    const pk: Record<string, string> = {
+      room: 'id',
+      participants: 'id',
+      left_votes: 'participant_id',
+      stories: 'id',
+      story_meta: 'id',
+    };
+    for (const table of tables) {
+      // Table names come from sqlite_master, never from input.
+      const rows = this.sql.exec<Row>(`SELECT rowid AS _rid, * FROM ${table}`).toArray();
+      for (const r of rows) {
+        const key = pk[table] ? String(r[pk[table]!]) : String(r['_rid']);
+        const { _rid, ...rest } = r;
+        void _rid;
+        out.push({ key: `${table}/${key}`, bytes: enc.encode(JSON.stringify(rest)).length });
+      }
+    }
+    return out;
   }
 }

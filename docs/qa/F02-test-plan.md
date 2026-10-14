@@ -5,7 +5,7 @@
 - Inputs: F01 test plan and report, F01 retro (`docs/retros/2026-10-13-f01.md`)
 - Author: qa-engineer
 - Status: **v2 (spec rev 2)**. All 28 spec issues are resolved in `docs/specs/02-story-list.md`
-  rev 2 (commit b3606d2); section 6 maps each to the spec wording and lists where the resolution
+  rev 2 (commit b3606d2); the contract is final (cca5f71, `packages/shared/README.md` "Stories"); section 9 lists the e2e files. Section 6 maps each to the spec wording and lists where the resolution
   differs from QA's proposal. Message and field names are still loose until the contract in
   `packages/shared` is final (error codes below follow the contract draft). E2E tests are not
   written yet.
@@ -428,3 +428,27 @@ QA's proposal; the coverage table already follows them.
   (`CI=1`, 2 workers, one of them the CI run) without retries; backend tests for validation,
   authorization matrix, atomic bulk and cap, confirmation rules, stale guards, persistence across
   `drop_memory`, logs without content, and the EU helper exist and pass.
+
+## 9. E2E implementation notes (written against the final contract, not yet run)
+
+Spec files in `e2e/tests/` (chromium counts; `@cross-browser` subsets also run on the other projects):
+
+| File | Covers |
+| --- | --- |
+| `stories-protocol.spec.ts` | Raw WS, chromium only: AC1-AC7, AC9-AC13 rules, error codes and fields, AC5 cap and races, AC6 authorization matrix, AC11 final round and storage hook, AC14/AC15 progress and sum, AC16 snapshot size and on-demand loading, AC17 `drop_memory` and `abort`, AC20, AC21, hidden votes in story mode, X-RACE-1/2/4/5/6 |
+| `stories-manage.spec.ts` | UI: AC1 (settings, confirmation, start page), AC2, AC3, AC4 (edit, delete, pointer and keyboard reorder, phone), AC5 |
+| `stories-voting.spec.ts` | UI: AC6 controls per role, AC7 select and idle, AC8 basics, AC9 Next, AC12 re-vote, AC13 skip and restore, X-F01-1/2/8 |
+| `stories-estimate.spec.ts` | UI: AC10 quick-pick table (19 cases against the independent oracle), accept flow, AC11 final round detail, removed participant, re-vote leak check, AC15 sum |
+| `stories-agenda.spec.ts` | UI: AC14, AC16 (200 max stories join), AC17 (drop memory, offline resync), hidden-vote frame inspection |
+| `stories-markdown.spec.ts` | AC8: 20-payload XSS corpus (description and title), supported subset, links, plain-text title, pathological input, Show more |
+| `stories-a11y.spec.ts` | AC19: axe on all new screens, keyboard-only flow, tab stops, live-region announcements, target size and names |
+
+Not in e2e: AC18 (logging, backend log-capture test), the ADR 0002 helper check, AC20's "client coalesces
+repeated keyboard moves" (no e2e: needs the real UI to count messages; add when the UI exists), real-device
+touch drag (manual), VoiceOver (manual).
+
+Test IDs used beyond plan section 5.4 (all isolated in `e2e/helpers/story-page.ts`, ASSUMED until frontend
+reports): `start-story-source`, `story-menu-<id>`, `story-move-top-<id>`, `story-move-bottom-<id>`,
+`story-edit-title|description|link|submit`, `round-confirm` (+ `-ok`, `-cancel`), `mode-switch-confirm-ok|cancel`,
+`story-description-toggle`, `story-history` and `story-history-vote`. `accept-confirm` is optional.
+`agenda-announcer` and `story-announcer` must be live regions with `aria-live="polite"`.
