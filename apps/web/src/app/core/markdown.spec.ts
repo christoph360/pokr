@@ -87,6 +87,13 @@ describe('MarkdownRenderer allow-list', () => {
     expect(el.querySelector('pre code')?.textContent).toBe('fenced <b>');
   });
 
+  it('F02-AC19 list items are direct children of their list (no host element between them)', () => {
+    const el = html('- one\n- two\n\n1. a\n2. b');
+    for (const list of Array.from(el.querySelectorAll('ul, ol'))) {
+      for (const child of Array.from(list.children)) expect(child.tagName).toBe('LI');
+    }
+  });
+
   it('F02-AC8 keeps single newlines as line breaks and adjacent inline text unspaced', () => {
     const el = html('a*b*c\nnext line');
     expect(el.querySelector('p')?.textContent).toBe('abcnext line');
