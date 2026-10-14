@@ -9,7 +9,7 @@ import {
   signal,
 } from '@angular/core';
 import { NonNullableFormBuilder, ReactiveFormsModule } from '@angular/forms';
-import { RoomNameSchema, decksEqual } from '@pokr/shared';
+import { RoomNameSchema, STORY_SOURCES, decksEqual, isRoundUnsaved } from '@pokr/shared';
 import type {
   ControlMode,
   Deck,
@@ -17,6 +17,7 @@ import type {
   RoomSettings,
   RoomSettingsInput,
   RoomState,
+  StorySource,
 } from '@pokr/shared';
 import { CommandError, RoomConnection } from '../core/room-connection';
 import { DECK_OPTIONS, checkText, parseCustomDeck, roundHasVotes } from '../core/room-logic';
@@ -37,7 +38,7 @@ const sameSettings = (a: RoomSettings, b: RoomSettings) => JSON.stringify(a) ===
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <app-modal-dialog
-      [open]="open() && !pendingDeck()"
+      [open]="open() && !pendingDeck() && pendingSource() === null"
       [heading]="t.settings.heading"
       testId="settings-dialog"
       titleId="settings-title"
@@ -125,6 +126,22 @@ const sameSettings = (a: RoomSettings, b: RoomSettings) => JSON.stringify(a) ===
           </select>
         </div>
 
+        <div class="field">
+          <label for="setting-story-source">{{ t.settings.storySource }}</label>
+          <select
+            id="setting-story-source"
+            data-testid="story-source-select"
+            aria-describedby="setting-story-source-hint"
+            [formControl]="sourceCtl"
+            (change)="onSourceChange()"
+          >
+            @for (source of sources; track source) {
+              <option [value]="source">{{ t.storySources[source] }}</option>
+            }
+          </select>
+          <p id="setting-story-source-hint" class="hint">{{ t.settings.storySourceHint }}</p>
+        </div>
+
         <div class="field field--check">
           <input
             id="setting-auto-reveal"
@@ -164,6 +181,17 @@ const sameSettings = (a: RoomSettings, b: RoomSettings) => JSON.stringify(a) ===
     </app-modal-dialog>
 
     <app-confirm-dialog
+      [open]="open() && pendingSource() !== null"
+      prefix="mode-switch-confirm"
+      [heading]="t.confirm.sourceTitle"
+      [message]="t.confirm.sourceBody"
+      [okLabel]="t.confirm.sourceOk"
+      [cancelLabel]="t.confirm.cancel"
+      (confirmed)="confirmSource()"
+      (cancelled)="cancelSource()"
+    />
+
+    <app-confirm-dialog
       [open]="open() && !!pendingDeck()"
       prefix="deck-confirm"
       [heading]="t.confirm.deckTitle"
@@ -179,6 +207,7 @@ export class SettingsDialog {
   protected readonly t = STRINGS;
   protected readonly decks = DECK_OPTIONS;
   protected readonly modes: readonly ControlMode[] = ['facilitator', 'everyone'];
+  protected readonly sources = STORY_SOURCES;
 
   readonly state = input.required<RoomState>();
   readonly open = input.required<boolean>();
@@ -190,6 +219,7 @@ export class SettingsDialog {
   protected readonly nameCtl = this.fb.control('', textValidator(RoomNameSchema, 'roomName'));
   protected readonly deckCtl = this.fb.control<DeckId>('fibonacci');
   protected readonly customCtl = this.fb.control('');
+  protected readonly sourceCtl = this.fb.control<StorySource>('topic');
   protected readonly modeCtl = this.fb.control<ControlMode>('facilitator');
   protected readonly autoRevealCtl = this.fb.control(false);
   protected readonly facVotesCtl = this.fb.control(true);
@@ -199,6 +229,8 @@ export class SettingsDialog {
   protected readonly failure = signal<string | null>(null);
   /** A deck change waiting for the user's confirmation. */
   protected readonly pendingDeck = signal<Deck | null>(null);
+  /** A story source change waiting for the user's confirmation. */
+  protected readonly pendingSource = signal<StorySource | null>(null);
 
   private readonly settings = computed(() => this.state().settings, { equal: sameSettings });
 
@@ -221,6 +253,7 @@ export class SettingsDialog {
       emitEvent: false,
     });
     this.customError.set(null);
+    this.sourceCtl.setValue(s.storySource, { emitEvent: false });
     this.modeCtl.setValue(s.controlMode, { emitEvent: false });
     this.autoRevealCtl.setValue(s.autoReveal, { emitEvent: false });
     this.facVotesCtl.setValue(s.facilitatorVotes, { emitEvent: false });
@@ -271,6 +304,24 @@ export class SettingsDialog {
     this.syncFrom(this.settings());
   }
 
+  protected onSourceChange(): void {
+    const source = this.sourceCtl.value;
+    if (source === this.settings().storySource) return;
+    if (isRoundUnsaved(this.state())) this.pendingSource.set(source);
+    else void this.apply({ storySource: source });
+  }
+
+  protected confirmSource(): void {
+    const source = this.pendingSource();
+    this.pendingSource.set(null);
+    if (source) void this.apply({ storySource: source }, true);
+  }
+
+  protected cancelSource(): void {
+    this.pendingSource.set(null);
+    this.syncFrom(this.settings());
+  }
+
   protected applyMode(): void {
     void this.apply({ controlMode: this.modeCtl.value });
   }
@@ -292,6 +343,10 @@ export class SettingsDialog {
       if (code === 'confirmation_required' && settings.deck) {
         // The server saw votes the client did not know about yet (race): ask now.
         this.pendingDeck.set(settings.deck);
+        return;
+      }
+      if (code === 'confirmation_required' && settings.storySource) {
+        this.pendingSource.set(settings.storySource);
         return;
       }
       this.failure.set(this.t.errors[code] ?? this.t.errors['internal_error'] ?? null);
