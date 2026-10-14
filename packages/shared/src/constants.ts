@@ -21,8 +21,26 @@ export const CUSTOM_DECK_MAX_CARDS = 20;
 
 /** Cheap guard applied before grapheme segmentation, in UTF-16 code units. */
 export const RAW_TEXT_MAX_UNITS = 4096;
-/** Largest accepted inbound WebSocket text frame / HTTP JSON body, in UTF-16 code units. */
+/** Largest accepted HTTP JSON body, in UTF-16 code units. */
 export const MAX_MESSAGE_CHARS = 16_384;
+/**
+ * Largest accepted inbound WebSocket frame (F02: a 100-line bulk add or a 5,000-grapheme description
+ * exceeds MAX_MESSAGE_CHARS). Every field is still bounded by its own schema.
+ */
+export const MAX_CLIENT_FRAME_CHARS = 65_536;
+/** Largest server frame a client accepts (a full snapshot with a worst-case agenda, see README). */
+export const MAX_SERVER_FRAME_CHARS = 4_194_304;
+
+// Stories (F02). Text limits in grapheme clusters after normalization.
+export const MAX_STORIES = 200; // F02-AC5
+export const BULK_ADD_MAX = 100; // F02-AC3, lines per paste
+export const STORY_TITLE_MIN = 1; // F02-AC2
+export const STORY_TITLE_MAX = 200;
+export const STORY_DESCRIPTION_MAX = 5_000; // F02-AC2, graphemes (newlines count as one)
+/** Cheap guard before grapheme segmentation of a description, in UTF-16 code units. */
+export const STORY_DESCRIPTION_RAW_MAX_UNITS = 20_000;
+export const STORY_LINK_MAX = 2_048; // UTF-16 code units of the URL as entered (trimmed)
+export const STORY_ID_MAX = 64;
 
 // Presence timing (F01-AC21, F01-AC25). Test mode may shorten the first three per room.
 export const HEARTBEAT_INTERVAL_MS = 10_000; // client sends a ping this often

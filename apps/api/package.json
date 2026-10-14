@@ -7,6 +7,7 @@
     "dev": "mkdir -p ../web/dist/web/browser && wrangler dev --port 8787",
     "build": "wrangler deploy --dry-run --env= --outdir dist",
     "test": "vitest run",
+    "stress": "node scripts/stress.ts",
     "typecheck": "wrangler types && tsc -p tsconfig.json",
     "types": "wrangler types",
     "deploy:staging": "wrangler deploy --env staging",

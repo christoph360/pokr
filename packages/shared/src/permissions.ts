@@ -33,3 +33,29 @@ export function canClaimFacilitator(
 ): boolean {
   return actor.online && actor.id !== facilitatorId && canClaimAt !== null && now >= canClaimAt;
 }
+
+/**
+ * Add, bulk add, edit, delete, reorder stories and accept an estimate (F02-AC6): facilitator only,
+ * whatever the control mode. Also: select, next, skip (a decision, see README).
+ */
+export function canManageStories(actor: Pick<Actor, 'id'>, facilitatorId: string): boolean {
+  return actor.id === facilitatorId;
+}
+
+/** Accepting the final estimate (F02-AC6): facilitator only, also with control mode "everyone". */
+export const canAcceptEstimate = canManageStories;
+
+/** Choosing the active story: select, next, skip (F02-AC7, AC9, AC13): facilitator only. */
+export const canSelectStory = canManageStories;
+
+/**
+ * Starting a new round of the current subject and revealing it (F02-AC6). Same rule as F01:
+ * with control mode "everyone", voters too. In story-list mode this is `reset` (a re-vote of the
+ * active story, F02-AC12) and `reveal`; it never changes which story is active.
+ */
+export const canStartRoundOrReveal = canRevealOrReset;
+
+/** Reading a story's description and final round (`get_story`): every joined participant, observers included. */
+export function canViewStory(_actor: Pick<Actor, 'id'>): boolean {
+  return true;
+}

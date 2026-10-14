@@ -1,5 +1,5 @@
 import type { Participant, RoomState } from '@pokr/shared';
-import { DEFAULT_SETTINGS } from '@pokr/shared';
+import { DEFAULT_SETTINGS, EMPTY_STORIES_STATE } from '@pokr/shared';
 
 export function participant(id: string, overrides: Partial<Participant> = {}): Participant {
   return { id, name: id, role: 'voter', online: true, hasVoted: false, ...overrides };
@@ -19,6 +19,7 @@ export function makeState(overrides: Partial<RoomState> = {}): RoomState {
     participants: [participant('p1'), participant('p2'), participant('p3')],
     myVote: null,
     canClaimAt: null,
+    stories: EMPTY_STORIES_STATE,
     ...overrides,
   };
 }

@@ -44,6 +44,7 @@ describe('create and room IDs', () => {
       controlMode: 'facilitator',
       autoReveal: false,
       facilitatorVotes: true,
+      storySource: 'topic',
     });
     expect(s.participants).toEqual([
       { id: room.participantId, name: 'Ann', role: 'voter', online: true, hasVoted: false },
@@ -67,6 +68,7 @@ describe('create and room IDs', () => {
       controlMode: 'everyone',
       autoReveal: true,
       facilitatorVotes: false,
+      storySource: 'topic',
     });
   });
 

@@ -1,5 +1,6 @@
 import { DurableObject } from 'cloudflare:workers';
 import {
+  EMPTY_STORIES_STATE,
   FACILITATOR_CLAIM_MS,
   HEARTBEAT_TIMEOUT_MS,
   JOIN_TIMEOUT_MS,
@@ -724,6 +725,7 @@ export class RoomDurableObject extends DurableObject<AppEnv> {
       facilitatorId: room.facilitatorId,
       settings: room.settings,
       topic: room.topic,
+      stories: EMPTY_STORIES_STATE, // TODO(F02): placeholder until the story list is implemented
       // Other participants' cards exist only in the revealed branch (F01-AC11).
       round:
         room.phase === 'voting'
