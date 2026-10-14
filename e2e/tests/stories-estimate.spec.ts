@@ -162,8 +162,10 @@ test.describe('F02 accepting an estimate in the UI (AC10, AC11)', () => {
       await sp(vera).expectRow('Story A', { estimate: '8' });
       await vera.page.reload();
       await vera.room.expectInRoom();
+      await sp(vera).openAgenda();
       await sp(vera).expectRow('Story A', { status: 'estimated', estimate: '8' });
       const late = await world.join(room, { name: 'Late', role: 'observer' });
+      await sp(late).openAgenda();
       await sp(late).expectRow('Story A', { status: 'estimated', estimate: '8' });
       // The "Last round" detail is open to everyone, observers included.
       for (const p of [late, vera, fac]) {

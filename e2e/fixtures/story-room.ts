@@ -89,6 +89,7 @@ export async function makeStoryRoom(
     ...(opts.timers ? { timers: opts.timers } : {}),
     ...(opts.facilitatorName ? { facilitatorName: opts.facilitatorName } : {}),
   });
+  for (const p of sc.all) await sp(p).openAgenda();
   const raw = await world.rawFacilitator(sc.room);
   raw.paced = true;
   const ids: Record<string, string> = {};

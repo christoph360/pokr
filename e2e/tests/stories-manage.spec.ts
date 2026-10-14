@@ -26,6 +26,7 @@ test.describe('F02 mode switch in the UI (AC1)', () => {
       }
       // Idle: the voter cannot pick a card.
       await expect(vera.room.card('5')).toHaveAttribute('aria-disabled', 'true');
+      await expect(sp(vera).cardsIdle).toBeVisible();
       await sp(fac).sourceSelect.selectOption({ value: 'topic' });
       for (const p of [fac, vera]) {
         await expect(sp(p).noActive).toHaveCount(0);
@@ -178,15 +179,15 @@ test.describe('F02 bulk add (AC3)', () => {
       const text = `ok one\n${tooLong}\nok three`;
       await s.fillBulk(text);
       await s.bulkSubmit.click();
-      await expect(s.bulkError).toBeVisible();
-      await expect(s.bulkError).toContainText('2');
+      await expect(s.bulkProblem).toBeVisible();
+      await expect(s.bulkProblem).toContainText('2');
       await expect(s.bulkText).toHaveValue(text);
       await s.expectTitles(['Existing']);
       // More than 100 lines.
       const many = Array.from({ length: 101 }, (_, i) => `Line ${i + 1}`).join('\n');
       await s.bulkText.fill(many);
       await s.bulkSubmit.click();
-      await expect(s.bulkError).toBeVisible();
+      await expect(s.bulkProblem).toBeVisible();
       await expect(s.rows).toHaveCount(1);
       // Exactly 100 works.
       await s.bulkText.fill(many.split('\n').slice(0, 100).join('\n'));
@@ -205,7 +206,7 @@ test.describe('F02 bulk add (AC3)', () => {
       const s = sp(fac);
       await s.fillBulk(Array.from({ length: 51 }, (_, i) => `Over ${i + 1}`).join('\n'));
       await s.bulkSubmit.click();
-      await expect(s.bulkError).toBeVisible();
+      await expect(s.bulkProblem).toBeVisible();
       await expect(s.rows).toHaveCount(150);
       await raw.command('resync');
       expect(rowsOf(raw)).toHaveLength(150);
@@ -294,8 +295,8 @@ test.describe('F02 edit, delete, reorder in the UI (AC4)', () => {
       await sp(fac).select('Active');
       await vera.room.vote('3');
       await sp(fac).doAction('Active', 'delete');
-      await expect(sp(fac).deleteConfirm).toBeVisible();
-      await sp(fac).deleteConfirmOk.click();
+      await expect(sp(fac).roundConfirm).toBeVisible();
+      await sp(fac).roundConfirmOk.click();
       for (const p of [fac, vera]) {
         await expect(sp(p).rows).toHaveCount(0);
         await expect(sp(p).noActive).toBeVisible();
@@ -312,7 +313,8 @@ test.describe('F02 edit, delete, reorder in the UI (AC4)', () => {
         titles: ['One', 'Two', 'Three'],
       });
       const s = sp(fac);
-      const source = (await s.row('Three').boundingBox())!;
+      // Dragging starts at the handle (the grip glyph in the row).
+      const source = (await s.row('Three').getByText('⋮⋮').boundingBox())!;
       const target = (await s.row('One').boundingBox())!;
       const page = fac.page;
       await page.mouse.move(source.x + source.width / 2, source.y + source.height / 2);
@@ -403,8 +405,8 @@ test.describe('F02 story cap in the UI (AC5)', () => {
       await s.add({ title: 'The 200th' });
       await expect(s.rows).toHaveCount(MAX_STORIES);
       await expect(s.limitNotice).toBeVisible();
-      await expectDisabled(s.addOpen.or(s.addSubmit).first());
-      await expectDisabled(s.bulkOpen.or(s.bulkSubmit).first());
+      await expectDisabled(s.addOpen);
+      await expectDisabled(s.bulkOpen);
       await s.doAction('The 200th', 'delete');
       await expect(s.rows).toHaveCount(MAX_STORIES - 1);
       await expect(s.limitNotice).toBeHidden();

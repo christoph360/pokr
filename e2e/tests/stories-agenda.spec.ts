@@ -126,6 +126,7 @@ test.describe('F02 size and loading in the browser (AC16)', () => {
       });
       const started = Date.now();
       const late = await world.join(room, { name: 'Late' });
+      await sp(late).openAgenda();
       await expect(sp(late).rows).toHaveCount(MAX_STORIES);
       // Indicative on a local machine: interactive within a few seconds.
       expect(Date.now() - started).toBeLessThan(15_000);
@@ -174,6 +175,7 @@ test.describe('F02 persistence in the browser (AC17)', () => {
     async ({ world }) => {
       const { room, fac, raw } = await makeStoryRoom(world, []);
       const vera = await world.join(room, { name: 'Vera', net: true });
+      await sp(vera).openAgenda();
       expectOk(await raw.command('add_stories', { text: 'One\nTwo' }));
       await sp(vera).expectTitles(['One', 'Two']);
       await vera.net!.goOffline();
@@ -218,6 +220,7 @@ test.describe('F02 hidden votes in the browser (F01-AC11 in story mode)', () => 
       await olga.page.reload();
       await olga.room.expectInRoom();
       const late = await world.join(room, { name: 'Late', role: 'observer' });
+      await sp(late).openAgenda();
       await expect(sp(late).activeTitle).toHaveText('A');
       expect(framesLeaking(olga.rec, tokens)).toEqual([]);
       expect(framesLeaking(late.rec, tokens)).toEqual([]);

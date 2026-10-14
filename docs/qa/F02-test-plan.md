@@ -447,8 +447,10 @@ Not in e2e: AC18 (logging, backend log-capture test), the ADR 0002 helper check,
 repeated keyboard moves" (no e2e: needs the real UI to count messages; add when the UI exists), real-device
 touch drag (manual), VoiceOver (manual).
 
-Test IDs used beyond plan section 5.4 (all isolated in `e2e/helpers/story-page.ts`, ASSUMED until frontend
-reports): `start-story-source`, `story-menu-<id>`, `story-move-top-<id>`, `story-move-bottom-<id>`,
-`story-edit-title|description|link|submit`, `round-confirm` (+ `-ok`, `-cancel`), `mode-switch-confirm-ok|cancel`,
-`story-description-toggle`, `story-history` and `story-history-vote`. `accept-confirm` is optional.
-`agenda-announcer` and `story-announcer` must be live regions with `aria-live="polite"`.
+Aligned with the frontend as built (b7c3a6a, d353b5b), all test IDs now come from `apps/web`:
+row actions are always-visible buttons with a roving tabindex (the agenda is one tab stop; Ctrl+Home,
+arrows), disabled controls use `aria-disabled`, the accept dialog needs a choice then `accept-confirm`,
+the delete dialog (`story-delete-confirm`) is for estimated stories and `round-confirm` for unsaved
+rounds, and on a phone the agenda is collapsed (`agenda-toggle`; the page object expands it).
+`e2e/tests/test-mode-off.spec.ts` starts a second `wrangler dev` without test mode (ports 8791 and
+9331) and checks that the test hooks answer 404. Still unverified: none of the suite has run yet.

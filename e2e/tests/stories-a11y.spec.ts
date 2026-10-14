@@ -17,6 +17,37 @@ async function tabTo(page: Page, target: ReturnType<Page['getByTestId']>, max = 
   throw new Error('target not reachable with Tab');
 }
 
+/**
+ * Move keyboard focus to a row action with keys only. The agenda is one tab stop (roving
+ * tabindex): Tab into the list, Ctrl+Home to the first row, Arrow Down to the target row, Arrow
+ * Right to the target action.
+ */
+async function keyFocus(page: Page, target: ReturnType<Page['getByTestId']>): Promise<void> {
+  const list = page.getByTestId('agenda-list');
+  const inList = (): Promise<boolean> => list.evaluate((el) => el.contains(document.activeElement));
+  if (!(await inList())) {
+    for (let i = 0; i < 120 && !(await inList()); i++) await page.keyboard.press('Tab');
+    for (let i = 0; i < 120 && !(await inList()); i++) await page.keyboard.press('Shift+Tab');
+  }
+  expect(await inList(), 'focus reached the agenda list with Tab').toBe(true);
+  await page.keyboard.press('Control+Home');
+  const rowId = await target.evaluate(
+    (el) => el.closest('li')?.getAttribute('data-story-id') ?? '',
+  );
+  for (let i = 0; i < 250; i++) {
+    const cur = await page.evaluate(
+      () => document.activeElement?.closest('li')?.getAttribute('data-story-id') ?? '',
+    );
+    if (cur === rowId) break;
+    await page.keyboard.press('ArrowDown');
+  }
+  for (let i = 0; i < 20; i++) {
+    if (await target.evaluate((el) => el === document.activeElement)) return;
+    await page.keyboard.press('ArrowRight');
+  }
+  throw new Error('row action not reachable with arrow keys');
+}
+
 /** Record every change of a live region's text from now on. */
 async function recordAnnouncements(locator: ReturnType<Page['getByTestId']>): Promise<void> {
   await locator.evaluate((el) => {
@@ -177,7 +208,7 @@ test.describe('F02 keyboard and screen reader (AC19)', () => {
       await s.expectTitles(['Existing', 'Typed with keys']);
       // Select the new story with the keyboard.
       const select = await s.action('Typed with keys', 'select');
-      await tabTo(page, select);
+      await keyFocus(page, select);
       await page.keyboard.press('Enter');
       await expect(s.activeTitle).toHaveText('Typed with keys');
       // Vote with a card (focus, Space), reveal with Enter.
@@ -187,35 +218,36 @@ test.describe('F02 keyboard and screen reader (AC19)', () => {
       await tabTo(page, fac.room.reveal);
       await page.keyboard.press('Enter');
       await expect(fac.room.summary).toBeVisible();
-      // Accept the median quick pick.
-      await s.openPicker();
+      // Accept the median quick pick: open the dialog, choose, confirm.
+      await tabTo(page, s.acceptOpen);
+      await page.keyboard.press('Enter');
+      await expect(s.acceptDialog).toBeVisible();
       await tabTo(page, s.quickMedian.or(s.quickConsensus).first());
       await page.keyboard.press('Enter');
-      if (await s.acceptConfirm.isVisible().catch(() => false)) {
-        await tabTo(page, s.acceptConfirm);
-        await page.keyboard.press('Enter');
-      }
+      await tabTo(page, s.acceptConfirm);
+      await page.keyboard.press('Enter');
+      await expect(s.acceptDialog).toBeHidden();
       await s.expectRow('Typed with keys', { status: 'estimated', estimate: '5' });
       // Reorder with the keyboard.
       const up = await s.action('Typed with keys', 'move-up');
-      await tabTo(page, up);
+      await keyFocus(page, up);
       await page.keyboard.press('Enter');
       await s.expectTitles(['Typed with keys', 'Existing']);
       await expect(up).toBeFocused();
-      // Next story, skip, and delete with Escape returning focus.
+      // Next story, then delete with Escape returning focus, then skip.
       await tabTo(page, s.next);
       await page.keyboard.press('Enter');
       await expect(s.activeTitle).toHaveText('Existing');
       const del = await s.action('Typed with keys', 'delete');
-      await tabTo(page, del);
+      await keyFocus(page, del);
       await page.keyboard.press('Enter');
-      await expect(s.deleteConfirm).toBeVisible();
+      await expect(s.deleteConfirm).toBeVisible(); // an estimated story asks first
       await page.keyboard.press('Escape');
       await expect(s.deleteConfirm).toBeHidden();
       await expect(del).toBeFocused();
       await s.expectTitles(['Typed with keys', 'Existing']);
       const skip = await s.action('Existing', 'skip');
-      await tabTo(page, skip);
+      await keyFocus(page, skip);
       await page.keyboard.press('Enter');
       if (await s.roundConfirm.isVisible().catch(() => false)) await s.roundConfirmOk.click();
       await s.expectRow('Existing', { status: 'skipped' });
@@ -243,8 +275,8 @@ test.describe('F02 keyboard and screen reader (AC19)', () => {
               n.getClientRects().length > 0,
           ).length,
       );
-      // A roving focus gives a handful; one menu per row gives one per row. Never several per row.
-      expect(tabbable).toBeLessThan(MAX_STORIES + 12);
+      // Roving tabindex: the whole list is one tab stop (plus the add / bulk / toggle controls).
+      expect(tabbable).toBeLessThanOrEqual(12);
     },
   );
 

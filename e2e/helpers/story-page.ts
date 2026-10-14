@@ -115,15 +115,10 @@ export class StoryPage {
   }
 
   // ---- row actions ----
-  /** ASSUMED: if actions live in a per-row menu, its toggle is `story-menu-<id>`. */
+  /** Row actions are always-visible buttons (roving tabindex), so no menu to open. */
   async action(title: string, kind: RowAction): Promise<Locator> {
     const id = await this.idOf(title);
-    const btn = this.page.getByTestId(`${ACTION_TESTID[kind]}-${id}`);
-    if (!(await btn.isVisible())) {
-      const menu = this.page.getByTestId(`story-menu-${id}`);
-      if (await menu.isVisible()) await menu.click();
-    }
-    return btn;
+    return this.page.getByTestId(`${ACTION_TESTID[kind]}-${id}`);
   }
   async doAction(title: string, kind: RowAction): Promise<void> {
     await (await this.action(title, kind)).click();
@@ -282,31 +277,61 @@ export class StoryPage {
     return this.page.getByTestId('story-history-vote');
   }
 
-  /** Make sure the picker is open (it may be always visible after reveal, or behind `accept-open`). */
-  async openPicker(): Promise<void> {
-    if (await this.acceptOpen.isVisible()) {
-      const expanded = await this.acceptOpen.getAttribute('aria-expanded');
-      if (expanded !== 'true') await this.acceptOpen.click();
+  get acceptDialog(): Locator {
+    return this.page.getByTestId('accept-dialog');
+  }
+  get acceptedEstimate(): Locator {
+    return this.page.getByTestId('accepted-estimate');
+  }
+  get skipNext(): Locator {
+    return this.page.getByTestId('story-skip-next');
+  }
+  get activeSkip(): Locator {
+    return this.page.getByTestId('active-skip');
+  }
+  get cardsIdle(): Locator {
+    return this.page.getByTestId('cards-idle');
+  }
+  get bulkFailure(): Locator {
+    return this.page.getByTestId('story-bulk-failure');
+  }
+  /** Per-line problems or a server failure of a bulk add. */
+  get bulkProblem(): Locator {
+    return this.bulkError.or(this.bulkFailure);
+  }
+  get agendaToggle(): Locator {
+    return this.page.getByTestId('agenda-toggle');
+  }
+
+  /** On a phone the agenda is collapsed by default; expand it (no-op where it is always open). */
+  async openAgenda(): Promise<void> {
+    const toggle = this.agendaToggle;
+    if ((await toggle.isVisible()) && (await toggle.getAttribute('aria-expanded')) === 'false') {
+      await toggle.click();
+      await expect(toggle).toHaveAttribute('aria-expanded', 'true');
     }
   }
-  /** Accept a card from the full picker. The confirm button is optional (ASSUMED `accept-confirm`). */
+
+  /** Open the accept dialog (after reveal): quick picks and the value cards live inside it. */
+  async openPicker(): Promise<void> {
+    if (!(await this.acceptDialog.isVisible())) await this.acceptOpen.click();
+    await expect(this.acceptDialog).toBeVisible();
+  }
+  /** Choose a card in the dialog, confirm, and wait for the dialog to close. */
   async accept(card: string): Promise<void> {
     await this.openPicker();
     await this.acceptCard(card).click();
-    await this.confirmAcceptIfAsked();
+    await this.confirmAccept();
   }
   async acceptQuick(which: 'consensus' | 'median'): Promise<void> {
     await this.openPicker();
     await (which === 'consensus' ? this.quickConsensus : this.quickMedian).click();
-    await this.confirmAcceptIfAsked();
+    await this.confirmAccept();
   }
-  private async confirmAcceptIfAsked(): Promise<void> {
-    // Bounded optional wait: the design may or may not ask for a confirmation after picking.
-    const asked = await this.acceptConfirm
-      .waitFor({ state: 'visible', timeout: 750 })
-      .then(() => true)
-      .catch(() => false);
-    if (asked) await this.acceptConfirm.click();
+  async confirmAccept(): Promise<void> {
+    await expect(this.acceptConfirm).not.toHaveAttribute('aria-disabled', 'true');
+    await this.acceptConfirm.click();
+    await expect(this.acceptDialog).toBeHidden();
   }
 
   /** Select a story; handles the discard confirmation when it appears and `confirm` is true. */
