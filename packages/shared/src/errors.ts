@@ -28,7 +28,8 @@ export const ERROR_CODES = [
   'no_next_story', // next_story with nothing left to estimate (F02-AC9)
   'invalid_story_state', // e.g. accept before reveal, accept for a story that is not active, skip an estimated story
   'wrong_story_source', // story-round command in topic mode, or set_topic / reset with topic in story-list mode
-  'stale_round', // accept_estimate refers to a round that is no longer the current one
+  'stale_round', // accept_estimate / next_story / skip_story refer to a round that is no longer the current one
+  'round_not_revealed', // accept_estimate while the round is still in voting
   'internal_error',
 ] as const;
 export type ErrorCode = (typeof ERROR_CODES)[number];
@@ -70,5 +71,6 @@ export const ERROR_HTTP_STATUS: Record<ErrorCode, number> = {
   invalid_story_state: 409,
   wrong_story_source: 409,
   stale_round: 409,
+  round_not_revealed: 409,
   internal_error: 500,
 };

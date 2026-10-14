@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest';
 import {
   COMMAND_PERMISSIONS,
   DEFAULT_SETTINGS,
-  EMPTY_STORIES_STATE,
   ERROR_CODES,
   ERROR_HTTP_STATUS,
   RoomSettingsInputSchema,
@@ -43,14 +42,6 @@ describe('story client messages', () => {
     expect(bad).toMatchObject({ ok: false, code: 'invalid_input', field: 'link' });
   });
 
-  it('F02-AC3: add_stories needs 1-100 valid titles', () => {
-    expect(parse({ type: 'add_stories', id: '1', titles: ['a', 'b'] }).ok).toBe(true);
-    expect(parse({ type: 'add_stories', id: '1', titles: [] }).ok).toBe(false);
-    const many = Array.from({ length: 101 }, (_, i) => `s${i}`);
-    expect(parse({ type: 'add_stories', id: '1', titles: many }).ok).toBe(false);
-    expect(parse({ type: 'add_stories', id: '1', titles: ['ok', ''] }).ok).toBe(false);
-  });
-
   it('F02-AC4: edit_story is partial; a null or empty link clears it', () => {
     expect(parse({ type: 'edit_story', id: '1', storyId: 's1', link: '' })).toMatchObject({
       ok: true,
@@ -63,33 +54,69 @@ describe('story client messages', () => {
     expect(parse({ type: 'edit_story', id: '1', storyId: 's1', title: 'T' }).ok).toBe(true);
   });
 
-  it('F02-AC4: delete_story defaults confirm to false; move_story takes beforeId or null', () => {
+  it('F02: delete_story has two separate acknowledgements, both default to false', () => {
     expect(parse({ type: 'delete_story', id: '1', storyId: 's1' })).toMatchObject({
       ok: true,
-      message: { confirm: false },
+      message: { confirmReset: false, confirmDelete: false },
     });
+    expect(
+      parse({
+        type: 'delete_story',
+        id: '1',
+        storyId: 's1',
+        confirmReset: true,
+        confirmDelete: true,
+      }),
+    ).toMatchObject({ ok: true, message: { confirmReset: true, confirmDelete: true } });
+  });
+
+  it('F02-AC4: move_story takes beforeId or null', () => {
     expect(parse({ type: 'move_story', id: '1', storyId: 's1', beforeId: null }).ok).toBe(true);
     expect(parse({ type: 'move_story', id: '1', storyId: 's1', beforeId: 's2' }).ok).toBe(true);
     expect(parse({ type: 'move_story', id: '1', storyId: 's1' }).ok).toBe(false);
   });
 
-  it('F02-AC7/AC9/AC10/AC13: select, next, accept, skip, get', () => {
-    expect(parse({ type: 'select_story', id: '1', storyId: 's1' }).ok).toBe(true);
-    expect(parse({ type: 'next_story', id: '1' }).ok).toBe(true);
+  it('F02 Definitions: every command that discards a round carries confirmReset (default false)', () => {
+    expect(parse({ type: 'select_story', id: '1', storyId: 's1' })).toMatchObject({
+      message: { confirmReset: false },
+    });
+    expect(parse({ type: 'next_story', id: '1', round: 4 })).toMatchObject({
+      message: { confirmReset: false, round: 4 },
+    });
+    expect(parse({ type: 'skip_story', id: '1', storyId: 's1', round: 4 })).toMatchObject({
+      message: { confirmReset: false, advance: false },
+    });
+    expect(
+      parse({
+        type: 'update_settings',
+        id: '1',
+        settings: { storySource: 'stories' },
+        confirmReset: true,
+      }),
+    ).toMatchObject({ ok: true, message: { confirmReset: true } });
+  });
+
+  it('F02 Definitions: accept, next and skip carry the round id; select does not', () => {
+    expect(parse({ type: 'next_story', id: '1' }).ok).toBe(false);
+    expect(parse({ type: 'skip_story', id: '1', storyId: 's1' }).ok).toBe(false);
+    expect(parse({ type: 'accept_estimate', id: '1', storyId: 's1', estimate: '5' }).ok).toBe(
+      false,
+    );
+    expect(parse({ type: 'next_story', id: '1', round: 0 }).ok).toBe(false);
     expect(
       parse({ type: 'accept_estimate', id: '1', storyId: 's1', round: 3, estimate: '5' }).ok,
     ).toBe(true);
-    expect(
-      parse({ type: 'accept_estimate', id: '1', storyId: 's1', round: 0, estimate: '5' }).ok,
-    ).toBe(false);
-    expect(parse({ type: 'skip_story', id: '1', storyId: 's1' })).toMatchObject({
-      message: { advance: false },
-    });
+  });
+
+  it('F02-AC13: restore_story, get_story and resync', () => {
+    expect(parse({ type: 'restore_story', id: '1', storyId: 's1' }).ok).toBe(true);
+    expect(parse({ type: 'restore_story', id: '1' }).ok).toBe(false);
     expect(parse({ type: 'get_story', id: '1', storyId: 's1' }).ok).toBe(true);
+    expect(parse({ type: 'resync', id: '1' }).ok).toBe(true);
     expect(parse({ type: 'select_story', id: '1' }).ok).toBe(false);
   });
 
-  it('F02: every story command has a permission entry', () => {
+  it('F02-AC6: every story command has a permission entry; only reads are open', () => {
     for (const t of [
       'add_story',
       'add_stories',
@@ -100,10 +127,29 @@ describe('story client messages', () => {
       'next_story',
       'accept_estimate',
       'skip_story',
+      'restore_story',
     ] as const) {
       expect(COMMAND_PERMISSIONS[t]).toBe('facilitator');
     }
     expect(COMMAND_PERMISSIONS.get_story).toBe('any');
+    expect(COMMAND_PERMISSIONS.resync).toBe('any');
+  });
+
+  it('F02-AC2: the tracker reference cannot be edited or set by clients', () => {
+    const r = parse({
+      type: 'edit_story',
+      id: '1',
+      storyId: 's1',
+      tracker: { provider: 'jira', key: 'A-1' },
+    });
+    expect(r.ok && 'tracker' in r.message).toBe(false);
+    const a = parse({
+      type: 'add_story',
+      id: '1',
+      title: 'T',
+      tracker: { provider: 'jira', key: 'A-1' },
+    });
+    expect(a.ok && 'tracker' in a.message).toBe(false);
   });
 });
 
@@ -114,11 +160,18 @@ describe('story server messages and error codes', () => {
       title: 'T',
       link: null,
       hasDescription: true,
+      tracker: null,
       status: 'estimated',
       estimate: '5',
       rev: 2,
       description: 'D',
-      finalRound: { number: 2, votes: [{ participantId: 'p1', name: 'Ann', card: '5' }] },
+      finalRound: {
+        number: 2,
+        votes: [
+          { participantId: 'p1', name: 'Ann', card: '5' },
+          { participantId: 'p2', name: null, card: '8' },
+        ],
+      },
     };
     const r = parseServerMessage(JSON.stringify({ type: 'story', id: '1', story: detail }));
     expect(r.ok).toBe(true);
@@ -140,6 +193,7 @@ describe('story server messages and error codes', () => {
       'invalid_story_state',
       'wrong_story_source',
       'stale_round',
+      'round_not_revealed',
     ] as const) {
       expect(ERROR_CODES).toContain(code);
       expect(ERROR_HTTP_STATUS[code]).toBeGreaterThanOrEqual(400);
@@ -159,9 +213,8 @@ describe('story source setting (F02-AC1)', () => {
     expect(v.safeParse(RoomSettingsInputSchema, { storySource: 'jira' }).success).toBe(false);
   });
 
-  it('F02-AC1: an empty stories state is the default for rooms without a list', () => {
-    expect(EMPTY_STORIES_STATE.agenda).toEqual([]);
-    expect(EMPTY_STORIES_STATE.active).toBeNull();
+  it('F02-AC1: Issue tracker is not accepted as a story source until F05', () => {
+    expect(v.safeParse(RoomSettingsInputSchema, { storySource: 'tracker' }).success).toBe(false);
   });
 });
 

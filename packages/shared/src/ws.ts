@@ -10,7 +10,7 @@ import type { ErrorCode } from './errors';
 import { DisplayNameSchema, RoleSchema, RoomSettingsInputSchema, TopicSchema } from './settings';
 import { RoomStateSchema } from './state';
 import {
-  BulkTitlesSchema,
+  BulkTextSchema,
   StoryDescriptionSchema,
   StoryDetailSchema,
   StoryIdSchema,
@@ -31,6 +31,8 @@ const CommandId = v.pipe(v.string(), v.minLength(1), v.maxLength(COMMAND_ID_MAX)
 const Token = v.pipe(v.string(), v.regex(TOKEN_PATTERN));
 const ParticipantId = v.pipe(v.string(), v.minLength(1), v.maxLength(64));
 /** Card references are checked against the deck by the server (`invalid_card`); here only bounded. */
+/** Round id: `round.number`. */
+const RoundId = v.pipe(v.number(), v.integer(), v.minValue(1));
 const CardRef = v.pipe(v.string(), v.minLength(1), v.maxLength(32));
 
 // ---- client -> server ----
@@ -60,6 +62,9 @@ export const ClientMessageSchema = v.variant('type', [
   v.object({ type: v.literal('hand_over'), id: CommandId, participantId: ParticipantId }),
   v.object({ type: v.literal('claim_facilitator'), id: CommandId }),
   // Stories (F02). Story IDs are server-generated; see README for the semantics of each command.
+  // Confirmation flags: `confirmReset` (everywhere, as in F01) acknowledges discarding an unsaved
+  // round; `confirmDelete` additionally acknowledges deleting an estimated story. A missing
+  // acknowledgement gives `confirmation_required` with `field` set to the flag that is needed.
   v.object({
     type: v.literal('add_story'),
     id: CommandId,
@@ -67,8 +72,9 @@ export const ClientMessageSchema = v.variant('type', [
     description: v.optional(StoryDescriptionSchema),
     link: v.optional(StoryLinkInputSchema),
   }),
-  v.object({ type: v.literal('add_stories'), id: CommandId, titles: BulkTitlesSchema }),
-  /** Partial: omitted fields are kept; description '' clears it; link ''/null clears it. At least one field (else invalid_input). */
+  /** `text` is the pasted text, one title per line; validated as a whole (see BulkTextSchema). */
+  v.object({ type: v.literal('add_stories'), id: CommandId, text: BulkTextSchema }),
+  /** Partial: omitted fields are kept; description '' clears it; link ''/null clears it. At least one field (else invalid_input). The tracker reference is not editable. */
   v.object({
     type: v.literal('edit_story'),
     id: CommandId,
@@ -77,12 +83,12 @@ export const ClientMessageSchema = v.variant('type', [
     description: v.optional(StoryDescriptionSchema),
     link: v.optional(StoryLinkInputSchema),
   }),
-  /** `confirm` is required when the story is estimated, or active with votes in the round (else confirmation_required). */
   v.object({
     type: v.literal('delete_story'),
     id: CommandId,
     storyId: StoryIdSchema,
-    confirm: v.optional(v.boolean(), false),
+    confirmReset: v.optional(v.boolean(), false),
+    confirmDelete: v.optional(v.boolean(), false),
   }),
   /** Move `storyId` directly before `beforeId`; `null` moves it to the end. Stale ids -> unknown_story. */
   v.object({
@@ -91,26 +97,43 @@ export const ClientMessageSchema = v.variant('type', [
     storyId: StoryIdSchema,
     beforeId: v.nullable(StoryIdSchema),
   }),
-  /** Make a story active and start a new round. On the active story: no-op (use `reset` for a re-vote). Also the way to re-vote an estimated story (F02-AC12). */
-  v.object({ type: v.literal('select_story'), id: CommandId, storyId: StoryIdSchema }),
-  v.object({ type: v.literal('next_story'), id: CommandId }),
-  /** `storyId` must be the active story and `round` the current revealed round, else invalid_story_state / stale_round. */
+  /** Make a story active and start a new round. On the active story: no-op (use `reset`). Also the way to re-vote an estimated story (F02-AC12). */
+  v.object({
+    type: v.literal('select_story'),
+    id: CommandId,
+    storyId: StoryIdSchema,
+    confirmReset: v.optional(v.boolean(), false),
+  }),
+  v.object({
+    type: v.literal('next_story'),
+    id: CommandId,
+    /** Round id (`round.number`) the client based this on; mismatch -> stale_round. */
+    round: RoundId,
+    confirmReset: v.optional(v.boolean(), false),
+  }),
+  /** `storyId` must be the active story and `round` the current revealed round, else invalid_story_state / round_not_revealed / stale_round. */
   v.object({
     type: v.literal('accept_estimate'),
     id: CommandId,
     storyId: StoryIdSchema,
-    round: v.pipe(v.number(), v.integer(), v.minValue(1)),
+    round: RoundId,
     estimate: CardRef,
   }),
-  /** With `advance`, atomically continues like next_story (no error if nothing is left). */
+  /** Pending story -> skipped. With `advance`, atomically continues like next_story. */
   v.object({
     type: v.literal('skip_story'),
     id: CommandId,
     storyId: StoryIdSchema,
+    round: RoundId,
     advance: v.optional(v.boolean(), false),
+    confirmReset: v.optional(v.boolean(), false),
   }),
+  /** Skipped story -> pending (F02-AC13). */
+  v.object({ type: v.literal('restore_story'), id: CommandId, storyId: StoryIdSchema }),
   /** Read a story's description and final round. Any joined participant. Answered by `story`, then `ack`. */
   v.object({ type: v.literal('get_story'), id: CommandId, storyId: StoryIdSchema }),
+  /** Ask for a full `state` including the agenda (after stale_round or an agenda gap). Any joined participant. */
+  v.object({ type: v.literal('resync'), id: CommandId }),
 ]);
 export type ClientMessage = v.InferOutput<typeof ClientMessageSchema>;
 export type ClientMessageType = ClientMessage['type'];
@@ -178,7 +201,9 @@ export const COMMAND_PERMISSIONS = {
   next_story: 'facilitator',
   accept_estimate: 'facilitator',
   skip_story: 'facilitator',
+  restore_story: 'facilitator',
   get_story: 'any',
+  resync: 'any',
 } as const satisfies Record<Exclude<ClientMessageType, 'join' | 'rejoin' | 'ping'>, string>;
 
 /** Transport binding: WebSocket close codes (application range). Message-level `error` is primary; these are the fallback. */

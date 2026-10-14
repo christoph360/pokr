@@ -6,11 +6,15 @@ import {
   MAX_STORIES,
   STORY_DESCRIPTION_MAX,
   STORY_TITLE_MAX,
-  BulkTitlesSchema,
+  BulkTextSchema,
+  STORY_DESCRIPTION_MAX_BYTES,
+  STORY_TITLE_MAX_BYTES,
+  utf8ByteLength,
   StoryDescriptionSchema,
   StoryLinkInputSchema,
   StoryTitleSchema,
   computeProgress,
+  displayStatus,
   isHttpUrl,
   moveStory,
   moveTarget,
@@ -20,6 +24,8 @@ import {
   sumEstimates,
 } from './index';
 import type { AgendaStory, Deck } from './index';
+
+const parse = (m: object) => parseClientMessage(JSON.stringify(m));
 
 const story = (
   id: string,
@@ -34,8 +40,22 @@ describe('story fields', () => {
     expect(v.safeParse(StoryTitleSchema, 'a\nb').success).toBe(false);
     expect(v.safeParse(StoryTitleSchema, 'a'.repeat(STORY_TITLE_MAX)).success).toBe(true);
     expect(v.safeParse(StoryTitleSchema, 'a'.repeat(STORY_TITLE_MAX + 1)).success).toBe(false);
-    // 200 family emoji are 200 graphemes, far more than 200 UTF-16 units
-    expect(v.safeParse(StoryTitleSchema, '👨‍👩‍👧'.repeat(STORY_TITLE_MAX)).success).toBe(true);
+    // 200 emoji are 200 graphemes but 400 UTF-16 units and 800 bytes
+    expect(v.safeParse(StoryTitleSchema, '😀'.repeat(STORY_TITLE_MAX)).success).toBe(true);
+  });
+
+  it('F02-AC2: title and description also have UTF-8 byte caps', () => {
+    // 60 family emoji are 60 graphemes but 18 bytes each (1,080 bytes)
+    const family = '👨‍👩‍👧';
+    expect(utf8ByteLength(family)).toBe(18);
+    expect(v.safeParse(StoryTitleSchema, family.repeat(55)).success).toBe(true); // 990 bytes
+    expect(v.safeParse(StoryTitleSchema, family.repeat(56)).success).toBe(false); // 1,008 bytes
+    expect(STORY_TITLE_MAX_BYTES).toBe(1000);
+    expect(v.safeParse(StoryDescriptionSchema, '€'.repeat(6666)).success).toBe(false); // 5,000 graphemes max
+    expect(v.safeParse(StoryDescriptionSchema, '€'.repeat(5000)).success).toBe(true); // 15,000 bytes
+    expect(v.safeParse(StoryDescriptionSchema, '😀'.repeat(5000)).success).toBe(true); // exactly 20,000 bytes
+    expect(v.safeParse(StoryDescriptionSchema, `${family.repeat(1112)}`).success).toBe(false); // 20,016 bytes, 1,112 graphemes
+    expect(STORY_DESCRIPTION_MAX_BYTES).toBe(20000);
   });
 
   it('F02-AC2: description counts graphemes, allows newlines and tabs, keeps Markdown whitespace', () => {
@@ -70,6 +90,9 @@ describe('story fields', () => {
       'example.com',
       'https://',
       'https://user:pw@example.com',
+      'https://example.com/a"b',
+      'https://example.com/a\\b',
+      `https://example.com/${'é'.repeat(1100)}`, // 2,200 bytes within 2,048 characters
       'https://exa mple.com',
       `https://example.com/${'a'.repeat(2048)}`,
     ]) {
@@ -80,33 +103,63 @@ describe('story fields', () => {
 });
 
 describe('bulk add', () => {
-  it('F02-AC3: one title per line, blank lines skipped, line endings and tabs tolerated', () => {
-    const r = parseBulkLines('  First  \r\n\r\nSecond\n\tThird\tx\rFourth Fifth');
-    expect(r.titles).toEqual(['First', 'Second', 'Third x', 'Fourth', 'Fifth']);
+  it('F02-AC3: one title per line, blank lines dropped, line endings and tabs tolerated, markers kept', () => {
+    const r = parseBulkLines('  First  \r\n\r\n- Second\n\tThird\tx\rFourth\u2028Fifth');
+    expect(r.titles).toEqual(['First', '- Second', 'Third x', 'Fourth', 'Fifth']);
     expect(r.errors).toEqual([]);
     expect(r.tooMany).toBe(false);
   });
 
-  it('F02-AC3: reports the line of an over-long title instead of truncating', () => {
-    const r = parseBulkLines(`ok\n${'x'.repeat(STORY_TITLE_MAX + 1)}\nok2`);
+  it('F02-AC3: reports the 1-based line (blank lines count) of an invalid line instead of truncating', () => {
+    const r = parseBulkLines(`ok\n\n${'x'.repeat(STORY_TITLE_MAX + 1)}\nok2`);
     expect(r.titles).toEqual(['ok', 'ok2']);
-    expect(r.errors).toEqual([{ line: 2, reason: 'too_long' }]);
+    expect(r.errors).toEqual([{ line: 3, reason: 'too_long' }]);
+    const bytes = parseBulkLines('👨‍👩‍👧'.repeat(56));
+    expect(bytes.errors).toEqual([{ line: 1, reason: 'too_long' }]);
   });
 
-  it('F02-AC3: max 100 per paste', () => {
+  it('F02-AC3: the server schema rejects the whole paste and names the line, never the content', () => {
+    const bad = parse({ type: 'add_stories', id: '1', text: 'one\ntwo\n' + 'y'.repeat(300) });
+    expect(bad).toMatchObject({ ok: false, code: 'invalid_input', field: 'text.3' });
+    expect(JSON.stringify(bad)).not.toContain('yyyy');
+    expect(parse({ type: 'add_stories', id: '1', text: 'one\n\n  \ntwo' }).ok).toBe(true);
+    expect(parse({ type: 'add_stories', id: '1', text: ' \n\n' })).toMatchObject({
+      ok: false,
+      field: 'text',
+    });
+  });
+
+  it('F02-AC3: max 100 non-blank lines per paste', () => {
     const lines = (n: number) => Array.from({ length: n }, (_, i) => `Story ${i}`);
     expect(parseBulkLines(lines(BULK_ADD_MAX).join('\n')).tooMany).toBe(false);
     expect(parseBulkLines(lines(BULK_ADD_MAX + 1).join('\n')).tooMany).toBe(true);
-    expect(v.safeParse(BulkTitlesSchema, lines(BULK_ADD_MAX)).success).toBe(true);
-    expect(v.safeParse(BulkTitlesSchema, lines(BULK_ADD_MAX + 1)).success).toBe(false);
-    expect(v.safeParse(BulkTitlesSchema, []).success).toBe(false);
+    expect(v.safeParse(BulkTextSchema, lines(BULK_ADD_MAX).join('\n\n')).success).toBe(true);
+    expect(v.safeParse(BulkTextSchema, lines(BULK_ADD_MAX + 1).join('\n')).success).toBe(false);
   });
 
-  it('F02-AC3/AC5: a worst-case bulk frame fits the client frame limit', () => {
-    const titles = Array.from({ length: BULK_ADD_MAX }, () => 'é'.repeat(STORY_TITLE_MAX));
-    const frame = JSON.stringify({ type: 'add_stories', id: 'x', titles });
+  it('F02-AC20: the largest valid bulk add fits the frame limit', () => {
+    // 100 titles of 1,000 bytes: 1 grapheme of `"` (escaped in JSON) plus 2-byte combining marks.
+    const title = '"' + '\u0301'.repeat(499);
+    expect(utf8ByteLength(title)).toBe(999);
+    expect(v.safeParse(StoryTitleSchema, title).success).toBe(true);
+    const text = Array.from({ length: BULK_ADD_MAX }, () => title).join('\n');
+    const frame = JSON.stringify({ type: 'add_stories', id: 'x'.repeat(64), text });
     expect(frame.length).toBeLessThan(MAX_CLIENT_FRAME_CHARS);
     expect(parseClientMessage(frame).ok).toBe(true);
+    // the same with plain emoji titles and a worst-case description
+    const emoji = JSON.stringify({
+      type: 'add_stories',
+      id: 'x',
+      text: Array.from({ length: BULK_ADD_MAX }, () => '😀'.repeat(200)).join('\n'),
+    });
+    expect(parseClientMessage(emoji).ok).toBe(true);
+    const description = JSON.stringify({
+      type: 'add_story',
+      id: 'x',
+      title: 'T',
+      description: '\n'.repeat(4999) + 'a',
+    });
+    expect(description.length).toBeLessThan(MAX_CLIENT_FRAME_CHARS);
     expect(MAX_STORIES).toBe(200);
   });
 });
@@ -160,84 +213,109 @@ describe('reorder (F02-AC4)', () => {
 describe('next story (F02-AC9)', () => {
   const agenda = [
     story('a', 'estimated', '3'),
-    story('b', 'active'),
+    story('b'), // pending, active
     story('c', 'skipped'),
-    story('d', 'pending'),
+    story('d'),
     story('e', 'estimated', '5'),
-    story('f', 'pending'),
+    story('f'),
   ];
 
   it('F02-AC9: first pending story after the active one in agenda order', () => {
     expect(nextStoryId(agenda, 'b')).toBe('d');
     expect(nextStoryId(agenda, 'd')).toBe('f');
+    expect(nextStoryId(agenda, 'a')).toBe('b');
   });
 
-  it('F02-AC9: without an active story it starts at the top', () => {
+  it('F02-AC9: with no active story it starts at the first pending one', () => {
     expect(nextStoryId([story('x', 'estimated', '1'), story('y')], null)).toBe('y');
+    expect(nextStoryId(agenda, null)).toBe('b');
   });
 
-  it('F02-AC9: wraps to earlier pending stories, null when none is left', () => {
-    expect(nextStoryId(agenda, 'f')).toBe('d');
-    expect(nextStoryId(agenda, 'f', { wrap: false })).toBeNull();
-    const done = [story('a', 'estimated', '3'), story('b', 'active'), story('c', 'estimated', '2')];
+  it('F02-AC9: wraps to the first pending story before the active one', () => {
+    expect(nextStoryId(agenda, 'f')).toBe('b');
+    expect(nextStoryId(agenda, 'e')).toBe('f');
+  });
+
+  it('F02-AC9: null when no pending story remains (no_next_story)', () => {
+    const done = [
+      story('a', 'estimated', '3'),
+      story('b', 'estimated', '4'),
+      story('c', 'skipped'),
+    ];
     expect(nextStoryId(done, 'b')).toBeNull();
+    expect(nextStoryId(done, null)).toBeNull();
     expect(nextStoryId([], null)).toBeNull();
+    // the only pending story is the active one itself
+    expect(nextStoryId([story('a', 'estimated', '3'), story('b')], 'b')).toBeNull();
   });
 
-  it('F02-AC9/AC13: skipped stories are excluded unless asked for', () => {
-    expect(nextStoryId([story('a', 'active'), story('b', 'skipped')], 'a')).toBeNull();
+  it('F02-AC9/AC13: skipped stories are never picked', () => {
+    expect(nextStoryId([story('a'), story('b', 'skipped')], 'a')).toBeNull();
+  });
+
+  it('F02-AC12: an estimated story being re-voted is not "next"', () => {
     expect(
-      nextStoryId([story('a', 'active'), story('b', 'skipped')], 'a', { includeSkipped: true }),
-    ).toBe('b');
-  });
-
-  it('F02-AC12: a re-voted story keeps its estimate and is not "next"', () => {
-    expect(nextStoryId([story('a', 'estimated', '3'), story('b', 'active', '5')], 'b')).toBeNull();
+      nextStoryId([story('a', 'estimated', '3'), story('b', 'estimated', '5')], 'b'),
+    ).toBeNull();
   });
 });
 
-describe('progress and sum', () => {
-  it('F02-AC14: progress counts estimates (also on a re-voted active story) and skipped', () => {
+describe('status, progress and sum', () => {
+  it('F02-AC14: status in text is derived: active wins over the stored status', () => {
+    const rows = [story('a', 'estimated', '3'), story('b', 'skipped')];
+    expect(displayStatus(rows[0]!, 'a')).toBe('active');
+    expect(displayStatus(rows[0]!, null)).toBe('estimated');
+    expect(displayStatus(rows[1]!, 'a')).toBe('skipped');
+  });
+
+  it('F02-AC14: progress counts non-skipped stories: "7 of 10 estimated, 2 skipped"', () => {
     const agenda = [
       story('a', 'estimated', '3'),
-      story('b', 'active', '5'),
+      story('b', 'estimated', '5'),
       story('c', 'skipped'),
       story('d'),
     ];
-    expect(computeProgress(agenda)).toEqual({ estimated: 2, skipped: 1, total: 4 });
-    expect(computeProgress([])).toEqual({ estimated: 0, skipped: 0, total: 0 });
+    expect(computeProgress(agenda)).toEqual({ estimated: 2, outOf: 3, skipped: 1 });
+    expect(computeProgress([])).toEqual({ estimated: 0, outOf: 0, skipped: 0 });
   });
 
-  it('F02-AC15: sum on numeric decks is exact, with halves and no trailing zeros', () => {
+  it('F02-AC15: sum on numeric decks is exact, ½ is 0.5, no trailing zeros', () => {
     const fib: Deck = { id: 'fibonacci' };
-    expect(sumEstimates(fib, [])).toBe('0');
-    expect(sumEstimates(fib, [story('a', 'estimated', '3'), story('b', 'estimated', '13')])).toBe(
-      '16',
-    );
-    expect(
-      sumEstimates(fib, [
-        story('a', 'estimated', '½'),
-        story('b', 'estimated', '½'),
-        story('c', 'estimated', '½'),
-      ]),
-    ).toBe('1.5');
-    expect(sumEstimates(fib, [story('a'), story('b', 'estimated', '8')])).toBe('8');
-    const custom: Deck = { id: 'custom', cards: ['0.25', '1'] };
-    expect(
-      sumEstimates(custom, [story('a', 'estimated', '0.25'), story('b', 'estimated', '1')]),
-    ).toBe('1.25');
+    const est = (...cards: string[]) => cards.map((c, i) => story(`s${i}`, 'estimated', c));
+    expect(sumEstimates(fib, est('3', '13'))).toEqual({ value: '16', excluded: 0 });
+    expect(sumEstimates(fib, est('½', '½', '½'))).toEqual({ value: '1.5', excluded: 0 });
+    expect(sumEstimates(fib, [story('a'), ...est('8')])).toEqual({ value: '8', excluded: 0 });
+    const custom: Deck = { id: 'custom', cards: ['0.1', '0.2', '1.05'] };
+    expect(sumEstimates(custom, est('0.1', '0.2'))).toEqual({ value: '0.3', excluded: 0 });
+    expect(sumEstimates(custom, est('1.05', '1.05'))).toEqual({ value: '2.1', excluded: 0 });
+    expect(sumEstimates({ id: 'powers-of-2' }, est('0', '0'))).toEqual({ value: '0', excluded: 0 });
   });
 
-  it('F02-AC15: no sum on non-numeric decks; estimates that are not numbers are ignored', () => {
-    expect(sumEstimates({ id: 'tshirt' }, [story('a', 'estimated', 'M')])).toBeNull();
-    expect(
-      sumEstimates({ id: 'custom', cards: ['S', '1'] }, [story('a', 'estimated', '1')]),
-    ).toBeNull();
-    expect(
-      sumEstimates({ id: 'powers-of-2' }, [
-        story('a', 'estimated', 'M'),
-        story('b', 'estimated', '4'),
-      ]),
-    ).toBe('4');
+  it('F02-AC15: no sum without estimates, and none on non-numeric decks', () => {
+    expect(sumEstimates({ id: 'fibonacci' }, [])).toEqual({ value: null, excluded: 0 });
+    expect(sumEstimates({ id: 'fibonacci' }, [story('a')])).toEqual({ value: null, excluded: 0 });
+    expect(sumEstimates({ id: 'tshirt' }, [story('a', 'estimated', 'M')])).toEqual({
+      value: null,
+      excluded: 0,
+    });
+    const mixed: Deck = { id: 'custom', cards: ['S', '1'] };
+    expect(sumEstimates(mixed, [story('a', 'estimated', '1')])).toEqual({
+      value: null,
+      excluded: 0,
+    });
+  });
+
+  it('F02-AC15: estimates that are not numbers after a deck change are excluded and counted', () => {
+    const powers: Deck = { id: 'powers-of-2' };
+    const rows = [
+      story('a', 'estimated', 'M'),
+      story('b', 'estimated', '4'),
+      story('c', 'estimated', 'XL'),
+    ];
+    expect(sumEstimates(powers, rows)).toEqual({ value: '4', excluded: 2 });
+    expect(sumEstimates(powers, [story('a', 'estimated', 'M')])).toEqual({
+      value: null,
+      excluded: 1,
+    });
   });
 });

@@ -1,14 +1,24 @@
 import * as v from 'valibot';
 import {
   BULK_ADD_MAX,
+  BULK_TEXT_MAX_CHARS,
   STORY_DESCRIPTION_MAX,
+  STORY_DESCRIPTION_MAX_BYTES,
   STORY_DESCRIPTION_RAW_MAX_UNITS,
   STORY_ID_MAX,
   STORY_LINK_MAX,
+  STORY_LINK_MAX_BYTES,
   STORY_TITLE_MAX,
+  STORY_TITLE_MAX_BYTES,
   STORY_TITLE_MIN,
 } from './constants';
-import { multilineTextSchema, graphemeLength, normalizeText, textSchema } from './text';
+import {
+  graphemeLength,
+  multilineTextSchema,
+  normalizeText,
+  textSchema,
+  utf8ByteLength,
+} from './text';
 import type { Deck } from './deck';
 import { cardHundredths, isNumericDeck } from './deck';
 
@@ -27,7 +37,7 @@ declare const URL: new (input: string) => {
 
 // ---- story source (room setting) ----
 
-/** Where the round's subject comes from. `'tracker'` joins with F05/F06 (additive). */
+/** Where the round's subject comes from. `'tracker'` joins with F05/F06; until then the schema (and so the server) rejects it. */
 export const STORY_SOURCES = ['topic', 'stories'] as const;
 export type StorySource = (typeof STORY_SOURCES)[number];
 export const StorySourceSchema = v.picklist(STORY_SOURCES);
@@ -36,21 +46,38 @@ export const StorySourceSchema = v.picklist(STORY_SOURCES);
 
 export const StoryIdSchema = v.pipe(v.string(), v.minLength(1), v.maxLength(STORY_ID_MAX));
 
-/** F02-AC2: 1-200 graphemes, normalized like every F01 free text (single line). */
-export const StoryTitleSchema = textSchema({ min: STORY_TITLE_MIN, max: STORY_TITLE_MAX });
+/** F02 Definitions: F01 text normalization, 1-200 graphemes, at most 1,000 UTF-8 bytes. Plain text. */
+export const StoryTitleSchema = v.pipe(
+  textSchema({ min: STORY_TITLE_MIN, max: STORY_TITLE_MAX }),
+  v.check(
+    (s) => utf8ByteLength(s) <= STORY_TITLE_MAX_BYTES,
+    `must be at most ${STORY_TITLE_MAX_BYTES} bytes`,
+  ),
+);
 
 /**
- * F02-AC2: at most 5,000 graphemes (counted like all F01/F02 text, on the normalized output),
- * Markdown, newlines and tabs allowed. '' means "no description".
+ * F02 Definitions: at most 5,000 graphemes (of the normalized text, like every F01/F02 limit) and
+ * 20,000 UTF-8 bytes, Markdown, newlines and tabs allowed. '' means "no description". The raw
+ * UTF-16 guard (20,000 units) only bounds the work done before normalization.
  */
 export const StoryDescriptionSchema = multilineTextSchema({
   max: STORY_DESCRIPTION_MAX,
+  maxBytes: STORY_DESCRIPTION_MAX_BYTES,
   rawMaxUnits: STORY_DESCRIPTION_RAW_MAX_UNITS,
 });
 
-/** http(s) only, a host, no embedded credentials, no whitespace or control characters. */
+/**
+ * http(s) only, a host, no embedded credentials, no whitespace or control characters, at most
+ * 2,048 characters and 2,048 UTF-8 bytes, and no `"` or `\` (never valid in a URL; keeps the JSON
+ * size of a link equal to its byte size so the AC16 snapshot budget holds).
+ */
 export function isHttpUrl(input: string): boolean {
-  if (input.length === 0 || input.length > STORY_LINK_MAX || /[\s\p{Cc}]/u.test(input)) {
+  if (
+    input.length === 0 ||
+    input.length > STORY_LINK_MAX ||
+    utf8ByteLength(input) > STORY_LINK_MAX_BYTES ||
+    /[\s\p{Cc}"\\]/u.test(input)
+  ) {
     return false;
   }
   try {
@@ -67,28 +94,44 @@ export function isHttpUrl(input: string): boolean {
 }
 
 /**
- * F02-AC2 link input. Trimmed; '' becomes null ("no link", and "clear" in an edit). The stored
- * text is what the user entered (not `URL.href`). Render with rel="noopener noreferrer".
+ * Link input. Trimmed; '' becomes null ("no link", and "clear" in an edit). The stored text is
+ * what the user entered (not `URL.href`). Render with rel="noopener noreferrer nofollow".
  */
 export const StoryLinkInputSchema = v.pipe(
   v.string(),
-  v.maxLength(STORY_LINK_MAX),
+  v.maxLength(STORY_LINK_MAX + 64), // slack for surrounding whitespace that trim removes
   v.transform((s) => s.trim()),
   v.transform((s) => (s === '' ? null : s)),
   v.check((s) => s === null || isHttpUrl(s), 'must be an http or https URL'),
 );
 
-export const StoryStatusSchema = v.picklist(['pending', 'active', 'estimated', 'skipped']);
 /**
- * Derived by the server for every snapshot:
- * - `active`: it is the active story (even when it still holds an earlier estimate, F02-AC12);
- * - else `estimated` if it has an estimate, `skipped` if skipped, otherwise `pending`.
+ * Stored status. "Active" is not stored: it is derived from `stories.activeId` (`displayStatus`),
+ * so a story being re-voted shows both active and its old estimate. Invariants: `estimated` <=>
+ * `estimate !== null`; `skipped` => no estimate.
  */
+export const StoryStatusSchema = v.picklist(['pending', 'estimated', 'skipped']);
 export type StoryStatus = v.InferOutput<typeof StoryStatusSchema>;
+export type DisplayStatus = StoryStatus | 'active';
+
+/** Reserved for F05/F06 (never set or edited in F02; always null). */
+export const TrackerRefSchema = v.object({
+  provider: v.picklist(['github', 'jira']),
+  /** Provider-specific issue key, e.g. "owner/repo#12" or "PROJ-34". */
+  key: v.pipe(v.string(), v.maxLength(200)),
+});
+export type TrackerRef = v.InferOutput<typeof TrackerRefSchema>;
+
+export function displayStatus(
+  story: Pick<AgendaStory, 'id' | 'status'>,
+  activeId: string | null,
+): DisplayStatus {
+  return story.id === activeId ? 'active' : story.status;
+}
 
 // ---- snapshot shapes ----
 
-/** One agenda row. Descriptions are not in the agenda (size, see README); `hasDescription` and `rev` tell when to fetch. */
+/** One agenda row. Descriptions are not in the agenda (size); `hasDescription` and `rev` tell when to fetch. */
 export const AgendaStorySchema = v.object({
   id: v.string(),
   title: v.string(),
@@ -99,67 +142,171 @@ export const AgendaStorySchema = v.object({
   estimate: v.nullable(v.string()),
   /** +1 on every edit of this story (title, description, link). Cache key for `get_story` results. */
   rev: v.pipe(v.number(), v.integer(), v.minValue(1)),
+  /** Reserved for F05/F06; always null in F02. */
+  tracker: v.nullable(TrackerRefSchema),
 });
 export type AgendaStory = v.InferOutput<typeof AgendaStorySchema>;
 
-export const ActiveStorySchema = v.object({
-  ...AgendaStorySchema.entries,
-  /** Markdown source. The client renders it sanitized (F02-AC8); never raw HTML. */
-  description: v.string(),
-});
-export type ActiveStory = v.InferOutput<typeof ActiveStorySchema>;
+/** The active story as a client composes it: its agenda row plus the description (`composeActiveStory`). */
+export type ActiveStory = AgendaStory & { description: string };
 
+/**
+ * The part of the stories state that is large and rarely changes. It travels only when
+ * `agendaVersion` changed or on join / rejoin / resync (see `mergeAgenda`).
+ */
+export const AgendaBlockSchema = v.object({
+  /** In agenda order. At most MAX_STORIES. */
+  rows: v.array(AgendaStorySchema),
+  /** Markdown source of the active story ('' when idle or without description). Render sanitized (F02-AC8). */
+  activeDescription: v.string(),
+});
+export type AgendaBlock = v.InferOutput<typeof AgendaBlockSchema>;
+
+/** Stories left to estimate out of the non-skipped ones: "7 of 10 estimated, 2 skipped" (F02-AC14). */
 export const StoryProgressSchema = v.object({
-  /** Stories holding an accepted estimate (an active story being re-voted keeps counting). */
   estimated: v.number(),
+  /** Non-skipped stories (the denominator). */
+  outOf: v.number(),
   skipped: v.number(),
-  total: v.number(),
 });
 export type StoryProgress = v.InferOutput<typeof StoryProgressSchema>;
 
-/** The final round kept for an estimated story (F02-AC11). Names are snapshotted: the voter may have left. */
+/** F02-AC15. `value` is null on non-numeric decks and when no estimate could be counted. */
+export const StorySumSchema = v.object({
+  value: v.nullable(v.string()),
+  /** Estimates that are not a number under the current deck (e.g. kept after a deck change). "N estimates not counted". */
+  excluded: v.number(),
+});
+export type StorySum = v.InferOutput<typeof StorySumSchema>;
+
+/** The final round kept for an estimated story (F02-AC11). */
 export const FinalRoundSchema = v.object({
+  /** Round id (`round.number`) in which the estimate was accepted. */
   number: v.number(),
-  votes: v.array(v.object({ participantId: v.string(), name: v.string(), card: v.string() })),
+  votes: v.array(
+    v.object({
+      participantId: v.string(),
+      /** Display name when the round was accepted; null once the participant was removed (F01-AC23): show the localized "Removed participant". The server erases the name. */
+      name: v.nullable(v.string()),
+      card: v.string(),
+    }),
+  ),
 });
 export type FinalRound = v.InferOutput<typeof FinalRoundSchema>;
 
 /** Reply to `get_story`. */
 export const StoryDetailSchema = v.object({
-  ...ActiveStorySchema.entries,
-  /** Votes of the round the current estimate was accepted in; null while there is no estimate. */
+  ...AgendaStorySchema.entries,
+  description: v.string(),
+  /** Votes of the round the current estimate was accepted in; null while there is no estimate. Visible to everyone. */
   finalRound: v.nullable(FinalRoundSchema),
 });
 export type StoryDetail = v.InferOutput<typeof StoryDetailSchema>;
 
 export const StoriesStateSchema = v.object({
-  /** In agenda order. At most MAX_STORIES. Empty in a new room. */
-  agenda: v.array(AgendaStorySchema),
-  /** `activeId` and `active` are both null or both set. Always null unless `settings.storySource === 'stories'`. */
+  /**
+   * +1 whenever the agenda block would differ: any add, edit, delete, move, skip, restore or
+   * accept; any change of `activeId`; starts at 0; persisted (survives eviction).
+   */
+  agendaVersion: v.pipe(v.number(), v.integer(), v.minValue(0)),
+  /** At most one. Always null unless `settings.storySource === 'stories'`. Story list mode with null is idle. */
   activeId: v.nullable(v.string()),
-  active: v.nullable(ActiveStorySchema),
-  /** Computed by the server with `computeProgress(agenda)`. */
+  /** Round id (`round.number`) in which the active story's current estimate was accepted, else null. For `isRoundUnsaved`. */
+  acceptedRound: v.nullable(v.number()),
+  /** Computed by the server with `computeProgress(rows)`. Always present (small). */
   progress: StoryProgressSchema,
-  /** Computed by the server with `sumEstimates(settings.deck, agenda)`; null unless the deck is numeric (F02-AC15). */
-  sum: v.nullable(v.string()),
+  /** Computed by the server with `sumEstimates(settings.deck, rows)`. Always present (small). */
+  sum: StorySumSchema,
+  /** Absent when the recipient already holds `agendaVersion`. */
+  agenda: v.optional(AgendaBlockSchema),
 });
 export type StoriesState = v.InferOutput<typeof StoriesStateSchema>;
 
+export const EMPTY_AGENDA_BLOCK: AgendaBlock = { rows: [], activeDescription: '' };
 export const EMPTY_STORIES_STATE: StoriesState = {
-  agenda: [],
+  agendaVersion: 0,
   activeId: null,
-  active: null,
-  progress: { estimated: 0, skipped: 0, total: 0 },
-  sum: null,
+  acceptedRound: null,
+  progress: { estimated: 0, outOf: 0, skipped: 0 },
+  sum: { value: null, excluded: 0 },
+  agenda: EMPTY_AGENDA_BLOCK,
 };
+
+// ---- keeping the agenda in sync (client) ----
+
+/** What a client holds between snapshots. */
+export interface HeldAgenda extends AgendaBlock {
+  version: number;
+}
+
+/**
+ * Apply the `stories` part of an accepted `state` message (one whose RoomState.version is not lower
+ * than the held one).
+ * - `agenda` present: replace the held agenda (join, rejoin, resync, or a change).
+ * - absent and `agendaVersion` equals the held version: keep it (vote, reveal, presence, settings...).
+ * - absent otherwise (nothing held, or a different version): the client is out of sync; keep what
+ *   it has and send `resync`. Never happens on an ordered connection after a join; it is the safety net.
+ * After a reconnect, throw the held agenda away: `rejoin` is answered with a state that carries it.
+ */
+export function mergeAgenda(
+  held: HeldAgenda | null,
+  stories: StoriesState,
+): { held: HeldAgenda | null; resync: boolean } {
+  if (stories.agenda) {
+    return { held: { version: stories.agendaVersion, ...stories.agenda }, resync: false };
+  }
+  if (held && held.version === stories.agendaVersion) return { held, resync: false };
+  return { held, resync: true };
+}
+
+/** The active story (row + description), or null when idle or the row is missing from the held agenda. */
+export function composeActiveStory(
+  held: AgendaBlock | null,
+  activeId: string | null,
+): ActiveStory | null {
+  if (!held || activeId === null) return null;
+  const row = held.rows.find((r) => r.id === activeId);
+  return row ? { ...row, description: held.activeDescription } : null;
+}
+
+/** Story list mode with no active story: no round to vote on (F02 Definitions). */
+export function isIdle(
+  settings: { storySource: StorySource },
+  stories: Pick<StoriesState, 'activeId'>,
+): boolean {
+  return settings.storySource === 'stories' && stories.activeId === null;
+}
 
 // ---- bulk add (F02-AC3) ----
 
-/** Titles of a bulk add. The whole paste is accepted or rejected (atomic). */
-export const BulkTitlesSchema = v.pipe(
-  v.array(StoryTitleSchema),
-  v.minLength(1),
-  v.maxLength(BULK_ADD_MAX),
+/**
+ * The pasted text of a bulk add (F02-AC3), sent as-is: the server, not the client, splits it, so
+ * errors carry the line number of the pasted text. Accepted or rejected as a whole. Invalid input
+ * reports `field: "text.N"` (N = 1-based line) for a bad line, or `"text"` for no lines / more
+ * than BULK_ADD_MAX lines. Messages never echo content. After validation use
+ * `parseBulkLines(text).titles`.
+ */
+export const BulkTextSchema = v.pipe(
+  v.string(),
+  v.maxLength(BULK_TEXT_MAX_CHARS),
+  v.rawCheck(({ dataset, addIssue }) => {
+    if (!dataset.typed) return;
+    const parsed = parseBulkLines(dataset.value);
+    const first = parsed.errors[0];
+    if (first) {
+      addIssue({
+        message:
+          first.reason === 'too_long'
+            ? `line ${first.line} is too long`
+            : `line ${first.line} contains control characters`,
+        path: [{ type: 'array', origin: 'value', input: [], key: first.line, value: undefined }],
+      });
+    } else if (parsed.titles.length === 0) {
+      addIssue({ message: 'at least one non-blank line is required' });
+    } else if (parsed.tooMany) {
+      addIssue({ message: `at most ${BULK_ADD_MAX} lines` });
+    }
+  }),
 );
 
 export interface BulkLineError {
@@ -192,7 +339,10 @@ export function parseBulkLines(text: string): ParsedBulk {
     // The rest of the control characters are rejected, as in a single-line add.
     if (/[\p{Cc}]/u.test(title)) {
       errors.push({ line: i + 1, reason: 'forbidden_characters' });
-    } else if (graphemeLength(title) > STORY_TITLE_MAX) {
+    } else if (
+      graphemeLength(title) > STORY_TITLE_MAX ||
+      utf8ByteLength(title) > STORY_TITLE_MAX_BYTES
+    ) {
       errors.push({ line: i + 1, reason: 'too_long' });
     } else {
       titles.push(title);
@@ -249,42 +399,31 @@ export function moveTarget(
   }
 }
 
-export interface NextStoryOptions {
-  /** Continue from the top when nothing is left below the active story. Default true. */
-  wrap?: boolean;
-  /** Treat skipped stories as unestimated. Default false. */
-  includeSkipped?: boolean;
-}
-
 /**
- * Next story (F02-AC9): the first story after the active one, in agenda order, that is still to
- * be estimated, i.e. `pending` (and `skipped` if asked). With no active story, search from the top.
- * Estimated stories (also while re-voted) and the active story are never returned.
- * Null when nothing qualifies.
+ * Next story (F02-AC9): the first `pending` story after the active one in agenda order, else the
+ * first `pending` story before it (wrap); with no active story, the first `pending` story.
+ * Skipped and estimated stories are never picked (an active, still pending story is neither after
+ * nor before itself). Null when none is left (`no_next_story`).
  */
 export function nextStoryId(
   agenda: readonly Pick<AgendaStory, 'id' | 'status'>[],
   activeId: string | null,
-  options: NextStoryOptions = {},
 ): string | null {
-  const { wrap = true, includeSkipped = false } = options;
-  const qualifies = (s: Pick<AgendaStory, 'status'>) =>
-    s.status === 'pending' || (includeSkipped && s.status === 'skipped');
   const start = activeId === null ? -1 : agenda.findIndex((s) => s.id === activeId);
-  const after = agenda.slice(start + 1).find(qualifies);
+  const pending = (s: Pick<AgendaStory, 'status'>) => s.status === 'pending';
+  const after = agenda.slice(start + 1).find(pending);
   if (after) return after.id;
-  if (!wrap || start < 0) return null;
-  return agenda.slice(0, start).find(qualifies)?.id ?? null;
+  if (start < 0) return null;
+  return agenda.slice(0, start).find(pending)?.id ?? null;
 }
 
-/** Progress (F02-AC14). The label "7 of 12 estimated" is `estimated` of `total` (UI decides about skipped). */
-export function computeProgress(
-  agenda: readonly Pick<AgendaStory, 'status' | 'estimate'>[],
-): StoryProgress {
+/** Progress (F02-AC14): "7 of 10 estimated, 2 skipped". `outOf` counts the non-skipped stories. */
+export function computeProgress(agenda: readonly Pick<AgendaStory, 'status'>[]): StoryProgress {
+  const skipped = agenda.filter((s) => s.status === 'skipped').length;
   return {
-    estimated: agenda.filter((s) => s.estimate !== null).length,
-    skipped: agenda.filter((s) => s.status === 'skipped').length,
-    total: agenda.length,
+    estimated: agenda.filter((s) => s.status === 'estimated').length,
+    outOf: agenda.length - skipped,
+    skipped,
   };
 }
 
@@ -299,20 +438,28 @@ function formatHundredths(hundredths: number): string {
 }
 
 /**
- * Sum of accepted estimates (F02-AC15). Null unless the deck is numeric. Estimates that are not a
- * number under the current deck (e.g. accepted before a deck change) are ignored. Exact integer
- * arithmetic in hundredths; output has no trailing zeros: "34", "34.5", "0.25".
+ * Sum of accepted estimates (F02-AC15). `value` is null on a non-numeric deck, or when no estimate
+ * could be counted. Estimates that are not a number under the current deck (kept after a deck
+ * change) are not counted but reported in `excluded` (0 on a non-numeric deck: nothing is
+ * summed there). `½` is 0.5. Exact integer arithmetic in hundredths; no trailing zeros: "34",
+ * "34.5", "0.3".
  */
 export function sumEstimates(
   deck: Deck,
   agenda: readonly Pick<AgendaStory, 'estimate'>[],
-): string | null {
-  if (!isNumericDeck(deck)) return null;
+): StorySum {
+  if (!isNumericDeck(deck)) return { value: null, excluded: 0 };
   let total = 0;
+  let counted = 0;
+  let excluded = 0;
   for (const s of agenda) {
     if (s.estimate === null) continue;
     const h = cardHundredths(s.estimate);
-    if (h !== null) total += h;
+    if (h === null) excluded++;
+    else {
+      total += h;
+      counted++;
+    }
   }
-  return formatHundredths(total);
+  return { value: counted === 0 ? null : formatHundredths(total), excluded };
 }

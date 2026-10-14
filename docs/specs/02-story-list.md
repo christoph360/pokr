@@ -43,7 +43,8 @@ Issue tracker imports (F05, F06) reuse this list.
     become LF; leading blank lines and trailing whitespace are trimmed; internal whitespace,
     newlines and tabs are kept; other control characters are rejected.
   - **Link**: optional, trimmed, absolute `http:` or `https:` with a host, no whitespace, no
-    embedded credentials (`user:pass@`), at most 2,048 characters.
+    embedded credentials (`user:pass@`), no `"` or `\` (percent-encode them), at most 2,048 UTF-8
+    bytes.
   - An empty optional field clears it.
 
 ## Acceptance criteria
@@ -64,6 +65,7 @@ Issue tracker imports (F05, F06) reuse this list.
   (one title per line).
   - Blank and whitespace-only lines are dropped; each line is normalized as a title. List
     markers such as `- ` are kept.
+  - The client sends the raw pasted text; the server splits and validates it.
   - The paste is all-or-nothing: more than 100 lines, any invalid line (reported with its
     1-based line number, without echoing content), or exceeding 200 stories in total rejects the
     whole paste. The client previews the count and errors and keeps the text on failure.
@@ -149,7 +151,9 @@ Issue tracker imports (F05, F06) reuse this list.
   estimate, a has-description flag) and the full text of the active story only; other
   descriptions and final rounds are loaded on demand. One story per storage row. Budgets, tested
   with 200 maximum-length stories: the snapshot is at most 1 MiB, and a broadcast caused by a vote,
-  reveal or presence change doesn't carry the agenda.
+  reveal or presence change doesn't carry the agenda. A change to the agenda itself (add, edit,
+  accept, ...) may send the whole agenda to everyone; that is accepted, since it's a facilitator
+  action.
 - **F02-AC17** Persistence: F01-AC30 extends to the agenda (order, fields, statuses, estimates),
   the active story, the round id and final-round snapshots. Stories live only in the room's
   EU-jurisdiction Durable Object (ADR 0002).
@@ -163,8 +167,10 @@ Issue tracker imports (F05, F06) reuse this list.
   - The agenda doesn't need a tab stop per action per row (roving focus or a per-row menu).
   - A change of active story and an accepted estimate are announced once in a polite live region.
 - **F02-AC20** Rate limits: each story command, including a bulk add, counts as one message
-  (F01-AC37). The largest valid message (a 100-line bulk add) must fit the frame limit. The
-  client coalesces repeated keyboard moves.
+  (F01-AC37). Inbound frames are limited to 65,536 characters, which fits the largest valid
+  message (a 100-line bulk add, about 52 KB). The client coalesces repeated keyboard moves.
+- **F02-AC21** A deck change keeps the F01-AC28 rule (confirmation whenever the round has votes),
+  even when an estimate was already accepted in that round.
 
 ## Notes for later features
 

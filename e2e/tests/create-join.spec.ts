@@ -80,6 +80,7 @@ test.describe('create a room', () => {
         controlMode: 'everyone',
         autoReveal: true,
         facilitatorVotes: false,
+        storySource: 'topic',
       });
       await expect(fac.page).toHaveTitle(/Sprint 42 planning/);
       // Facilitator votes off: no cards for the facilitator (F01-AC35).

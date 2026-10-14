@@ -4,6 +4,7 @@ export * from './text';
 export * from './deck';
 export * from './stories';
 export * from './estimate';
+export * from './rounds';
 export * from './settings';
 export * from './room-id';
 export * from './summary';

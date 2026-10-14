@@ -33,7 +33,9 @@ export const MAX_SERVER_FRAME_CHARS = 4_194_304;
 
 // Stories (F02). Text limits in grapheme clusters after normalization.
 export const MAX_STORIES = 200; // F02-AC5
-export const BULK_ADD_MAX = 100; // F02-AC3, lines per paste
+export const BULK_ADD_MAX = 100; // F02-AC3, non-blank lines per paste
+/** Pasted text of a bulk add, UTF-16 units (100 maximum-length titles plus blank lines; fits MAX_CLIENT_FRAME_CHARS). */
+export const BULK_TEXT_MAX_CHARS = 56_000;
 export const STORY_TITLE_MIN = 1; // F02-AC2
 export const STORY_TITLE_MAX = 200;
 export const STORY_DESCRIPTION_MAX = 5_000; // F02-AC2, graphemes (newlines count as one)
@@ -41,6 +43,12 @@ export const STORY_DESCRIPTION_MAX = 5_000; // F02-AC2, graphemes (newlines coun
 export const STORY_DESCRIPTION_RAW_MAX_UNITS = 20_000;
 export const STORY_LINK_MAX = 2_048; // UTF-16 code units of the URL as entered (trimmed)
 export const STORY_ID_MAX = 64;
+/** UTF-8 byte caps on top of the grapheme limits (F02 Definitions). */
+export const STORY_TITLE_MAX_BYTES = 1_000;
+export const STORY_DESCRIPTION_MAX_BYTES = 20_000;
+export const STORY_LINK_MAX_BYTES = 2_048; // = STORY_LINK_MAX; links are kept ASCII-ish so the snapshot budget holds
+/** F02-AC16: the join/resync snapshot with 200 maximum-length stories must stay below this many bytes. */
+export const SNAPSHOT_MAX_BYTES = 1_048_576;
 
 // Presence timing (F01-AC21, F01-AC25). Test mode may shorten the first three per room.
 export const HEARTBEAT_INTERVAL_MS = 10_000; // client sends a ping this often
