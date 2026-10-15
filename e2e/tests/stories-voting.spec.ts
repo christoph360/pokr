@@ -128,7 +128,7 @@ test.describe('F02 selecting a story (AC7, AC8 basics)', () => {
       });
       expectOk(await selectStory(raw, ids['Story A']!));
       await expect(sp(fac).activeTitle).toHaveText('Story A');
-      const late = await world.join(room, { name: 'Late' });
+      const late = await world.join(room, { name: 'Late', clientConfig: { pingIntervalMs: 2000 } });
       await sp(late).openAgenda();
       await expect(sp(late).activeTitle).toHaveText('Story A');
       await sp(late).expectTitles(['Story A', 'Story B']);
@@ -161,7 +161,8 @@ test.describe('F02 selecting a story (AC7, AC8 basics)', () => {
         await expect(s.activeLink).toHaveAttribute('href', 'https://tracker.example/issue/1');
         // Above the cards.
         const story = await s.activeStory.boundingBox();
-        const cards = await p.room.cardGrid.boundingBox().catch(() => null);
+        const cards =
+          (await p.room.cardGrid.count()) > 0 ? await p.room.cardGrid.boundingBox() : null;
         if (story && cards) expect(story.y).toBeLessThan(cards.y);
       }
       expectOk(
@@ -207,6 +208,7 @@ test.describe('F02 selecting a story (AC7, AC8 basics)', () => {
       await vera.room.vote('5');
       await fac.room.expectCounter(1, 1);
       await fac.room.reveal.click();
+      await sp(fac).openPicker();
       await expect(sp(fac).quickMedian.or(sp(fac).quickConsensus).first()).toBeVisible();
       await sp(fac).acceptQuick('median');
       await sp(vera).expectRow('A', { status: 'estimated', estimate: '5' });

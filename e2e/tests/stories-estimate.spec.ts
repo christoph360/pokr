@@ -66,8 +66,13 @@ test.describe('F02 quick picks (AC10)', () => {
         voters: c.votes.map((_, i) => `Voter ${i + 1}`),
         titles: ['Story'],
       });
-      const fac = await world.join(sr.room, { name: 'Fiona', asFacilitator: true });
+      const fac = await world.join(sr.room, {
+        name: 'Fiona',
+        asFacilitator: true,
+        clientConfig: { pingIntervalMs: 2000 },
+      });
       await sp(fac).select('Story');
+      await expect(sp(fac).activeTitle).toHaveText('Story');
       for (const [i, card] of c.votes.entries()) expectOk(await sr.voters[i]!.vote(card));
       await fac.room.reveal.click();
       await expect(fac.room.summary).toBeVisible();
@@ -164,7 +169,11 @@ test.describe('F02 accepting an estimate in the UI (AC10, AC11)', () => {
       await vera.room.expectInRoom();
       await sp(vera).openAgenda();
       await sp(vera).expectRow('Story A', { status: 'estimated', estimate: '8' });
-      const late = await world.join(room, { name: 'Late', role: 'observer' });
+      const late = await world.join(room, {
+        name: 'Late',
+        role: 'observer',
+        clientConfig: { pingIntervalMs: 2000 },
+      });
       await sp(late).openAgenda();
       await sp(late).expectRow('Story A', { status: 'estimated', estimate: '8' });
       // The "Last round" detail is open to everyone, observers included.

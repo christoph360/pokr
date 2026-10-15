@@ -57,7 +57,9 @@ test.describe('F02 mode switch in the UI (AC1)', () => {
       // Confirm.
       await sp(fac).sourceSelect.selectOption({ value: 'topic' });
       await sp(fac).modeConfirmOk.click();
-      await expect(vera.room.topicInput.or(vera.room.topicDisplay).first()).toBeAttached();
+      await expect(
+        vera.page.getByTestId('topic-empty').or(vera.room.topicDisplay).first(),
+      ).toBeVisible();
       await expect(sp(vera).activeStory).toHaveCount(0);
       await vera.room.expectSelected('5', false);
       await fac.room.expectCounter(0, 2);
@@ -313,10 +315,13 @@ test.describe('F02 edit, delete, reorder in the UI (AC4)', () => {
         titles: ['One', 'Two', 'Three'],
       });
       const s = sp(fac);
-      // Dragging starts at the handle (the grip glyph in the row).
-      const source = (await s.row('Three').getByText('⋮⋮').boundingBox())!;
-      const target = (await s.row('One').boundingBox())!;
       const page = fac.page;
+      // Everything on screen (no page auto-scroll while dragging); dragging starts at the grip.
+      await page.setViewportSize({ width: 1280, height: 1600 });
+      const handle = s.row('Three').getByText('⋮⋮');
+      await handle.scrollIntoViewIfNeeded();
+      const source = (await handle.boundingBox())!;
+      const target = (await s.row('One').boundingBox())!;
       await page.mouse.move(source.x + source.width / 2, source.y + source.height / 2);
       await page.mouse.down();
       await page.mouse.move(source.x + source.width / 2, source.y + source.height / 2 - 6, {

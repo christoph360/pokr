@@ -211,7 +211,9 @@ test.describe('F02 add story (AC2)', () => {
     { name: 'newline', title: 'two\nlines', ok: false },
     { name: 'control character', title: 'bell\u0007', ok: false },
     { name: 'NUL', title: 'nul\u0000', ok: false },
-    { name: 'trim and collapse', title: '  a   b \t c  ', ok: true, stored: 'a b c' },
+    { name: 'trim and collapse', title: '  a   b    c  ', ok: true, stored: 'a b c' },
+    // A tab is a control character (F01 text normalization), not whitespace to collapse.
+    { name: 'tab', title: 'a\tb', ok: false },
     {
       name: 'HTML stays text',
       title: '<img src=x onerror=alert(1)>',
@@ -1027,12 +1029,12 @@ test.describe('F02 select a story (AC7)', () => {
         ]);
         expectOk(r1);
         expectOk(r2);
-        const settled = await fac.waitForState((s) => s.round.number > before, 'round moved');
-        await voters[0]!.waitForState(
-          (s) => s.round.number === settled.round.number,
-          'vera caught up',
-        );
-        await tab.waitForState((s) => s.round.number === settled.round.number, 'tab caught up');
+        // Quiesce: a resync is ordered after everything the server processed before it.
+        for (const c of [fac, tab, voters[0]!]) expectOk(await c.command('resync'));
+        const settled = fac.state!;
+        expect(settled.round.number).toBeGreaterThan(before);
+        expect(voters[0]!.state!.round.number).toBe(settled.round.number);
+        expect(tab.state!.round.number).toBe(settled.round.number);
         expect([x, y]).toContain(settled.stories.activeId);
         expect(voters[0]!.state!.stories.activeId).toBe(settled.stories.activeId);
         expect(tab.state!.stories.activeId).toBe(settled.stories.activeId);
@@ -1611,11 +1613,13 @@ test.describe('F02 agenda progress and sum (AC14, AC15)', () => {
       name: 'T-shirt deck has no sum',
       deck: { settings: { deck: { id: 'tshirt' } } },
       cards: ['M', 'L'],
+      numeric: false,
     },
     {
       name: 'custom non-numeric deck has no sum',
       deck: { settings: { deck: { id: 'custom', cards: ['1', 'XL'] } } },
       cards: ['1', 'XL'],
+      numeric: false,
     },
   ];
   for (const c of sumCases) {

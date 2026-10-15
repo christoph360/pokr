@@ -83,12 +83,11 @@ export class StoryPage {
     return id;
   }
   async titles(): Promise<string[]> {
-    const n = await this.rows.count();
-    const out: string[] = [];
-    for (let i = 0; i < n; i++) {
-      out.push((await this.rows.nth(i).getByTestId('story-title').innerText()).trim());
-    }
-    return out;
+    // One atomic read: rows can disappear between a count and a per-row read.
+    const texts = await this.rows.evaluateAll((els) =>
+      els.map((e) => e.querySelector('[data-testid="story-title"]')?.textContent ?? ''),
+    );
+    return texts.map((t) => t.trim());
   }
   async expectTitles(expected: string[]): Promise<void> {
     await expect.poll(() => this.titles(), { message: 'agenda order' }).toEqual(expected);
@@ -104,7 +103,24 @@ export class StoryPage {
   ): Promise<void> {
     const row = this.row(title);
     await expect(row).toHaveCount(1);
-    if (expected.status) await expect(row).toHaveAttribute('data-status', expected.status);
+    // `data-status` is the DISPLAYED status: the active story shows "active" (a re-voted story
+    // keeps its estimate in `data-estimate`). For an active row the stored status is read from the
+    // estimate: estimated has one; pending and skipped look alike while active.
+    if (expected.active === true) await expect(row).toHaveAttribute('data-status', 'active');
+    if (expected.status) {
+      if (expected.status === 'estimated') {
+        // Estimated rows keep their estimate even while active (re-vote).
+        await expect(row).toHaveAttribute('data-estimate', /.+/);
+        if (expected.active === false)
+          await expect(row).toHaveAttribute('data-status', 'estimated');
+      } else {
+        await expect(row).not.toHaveAttribute('data-estimate', /.+/);
+        const shown = expected.active === true ? 'active' : `(${expected.status}|active)`;
+        await expect(row).toHaveAttribute('data-status', new RegExp(`^${shown}$`));
+        if (expected.active === false)
+          await expect(row).toHaveAttribute('data-status', expected.status);
+      }
+    }
     if (expected.active !== undefined)
       await expect(row).toHaveAttribute('data-active', expected.active ? 'true' : 'false');
     if (expected.estimate === null) {
@@ -158,6 +174,18 @@ export class StoryPage {
   get addLink(): Locator {
     return this.page.getByTestId('story-add-link');
   }
+  get addDialog(): Locator {
+    return this.page.getByTestId('story-add-dialog');
+  }
+  get editDialog(): Locator {
+    return this.page.getByTestId('story-edit-dialog');
+  }
+  get bulkDialog(): Locator {
+    return this.page.getByTestId('story-bulk-dialog');
+  }
+  get bulkCancel(): Locator {
+    return this.page.getByTestId('story-bulk-cancel');
+  }
   get addSubmit(): Locator {
     return this.page.getByTestId('story-add-submit');
   }
@@ -191,6 +219,8 @@ export class StoryPage {
   async add(fields: { title: string; description?: string; link?: string }): Promise<void> {
     await this.fillAdd(fields);
     await this.addSubmit.click();
+    // The dialog closes after a successful submit; wait so the next add starts clean.
+    await expect(this.addDialog).toBeHidden();
   }
   async openBulk(): Promise<void> {
     if (!(await this.bulkText.isVisible())) await this.bulkOpen.click();

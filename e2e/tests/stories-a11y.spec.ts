@@ -120,13 +120,14 @@ test.describe('F02 axe scans (AC19)', () => {
       await s.fillAdd({ title: '' });
       await s.addSubmit.click(); // inline error visible
       await expectNoSeriousA11yViolations(fac.page, testInfo, 'add-with-error');
-      await s.fillAdd({ title: 'Added' });
-      await s.addSubmit.click();
+      await s.add({ title: 'Added' });
       await s.expectTitles(['Story A', 'Story B', 'Added']);
       await s.fillBulk(`one\n${'x'.repeat(201)}`);
       await s.bulkSubmit.click();
       await expect(s.bulkError).toBeVisible();
       await expectNoSeriousA11yViolations(fac.page, testInfo, 'bulk-with-error');
+      await s.bulkCancel.click();
+      await expect(s.bulkDialog).toBeHidden();
       await s.doAction('Added', 'edit');
       await expectNoSeriousA11yViolations(fac.page, testInfo, 'edit');
       await fac.page.keyboard.press('Escape');

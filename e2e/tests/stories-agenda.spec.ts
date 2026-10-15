@@ -115,7 +115,7 @@ test.describe('F02 size and loading in the browser (AC16)', () => {
     'F02-AC16: a participant joining a room with 200 maximum-length stories is in the room with a snapshot under 1 MiB',
     chromiumOnly,
     async ({ world }) => {
-      const { room } = await makeStoryRoom(world, []);
+      const { room, raw } = await makeStoryRoom(world, []);
       await world.api.seedStories(room.roomId, {
         count: MAX_STORIES,
         titleLength: 200,
@@ -124,8 +124,10 @@ test.describe('F02 size and loading in the browser (AC16)', () => {
         estimated: 100,
         finalRoundVotes: 50,
       });
+      await raw.command('resync');
+      expectOk(await selectStory(raw, rowsOf(raw)[150]!.id, true));
       const started = Date.now();
-      const late = await world.join(room, { name: 'Late' });
+      const late = await world.join(room, { name: 'Late', clientConfig: { pingIntervalMs: 2000 } });
       await sp(late).openAgenda();
       await expect(sp(late).rows).toHaveCount(MAX_STORIES);
       // Indicative on a local machine: interactive within a few seconds.
@@ -219,7 +221,11 @@ test.describe('F02 hidden votes in the browser (F01-AC11 in story mode)', () => 
       );
       await olga.page.reload();
       await olga.room.expectInRoom();
-      const late = await world.join(room, { name: 'Late', role: 'observer' });
+      const late = await world.join(room, {
+        name: 'Late',
+        role: 'observer',
+        clientConfig: { pingIntervalMs: 2000 },
+      });
       await sp(late).openAgenda();
       await expect(sp(late).activeTitle).toHaveText('A');
       expect(framesLeaking(olga.rec, tokens)).toEqual([]);

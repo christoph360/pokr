@@ -5,7 +5,7 @@ import { StoryPage } from '../helpers/story-page';
 import { addStories } from '../helpers/stories';
 import { makeRoom } from './scenarios';
 import type { PersonSpec, Scenario } from './scenarios';
-import type { Participant, RoomHandle, World } from './index';
+import type { Participant, PokrTestConfig, RoomHandle, World } from './index';
 
 export interface RawStoryRoom {
   room: RoomHandle;
@@ -82,12 +82,17 @@ export async function makeStoryRoom(
     titles?: string[];
     timers?: TestTimersRequest;
     facilitatorName?: string;
+    clientConfig?: Partial<PokrTestConfig>;
   } = {},
 ): Promise<UiStoryRoom> {
   const sc = await makeRoom(world, people, {
     settings: { storySource: 'stories', ...opts.settings },
     ...(opts.timers ? { timers: opts.timers } : {}),
     ...(opts.facilitatorName ? { facilitatorName: opts.facilitatorName } : {}),
+    // The F01 test heartbeat (250 ms, connection declared dead after 375 ms) makes the client
+    // reconnect when a loaded machine stalls for a moment, which swallowed UI actions. Story
+    // tests act on the UI and do not depend on fast dead-connection detection.
+    clientConfig: opts.clientConfig ?? { pingIntervalMs: 2000 },
   });
   for (const p of sc.all) await sp(p).openAgenda();
   const raw = await world.rawFacilitator(sc.room);
