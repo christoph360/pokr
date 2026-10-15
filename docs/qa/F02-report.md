@@ -6,25 +6,23 @@
 - Environment: macOS, local `wrangler dev --var POKR_TEST_MODE:1` (:8787) and `ng serve` (:4200), Playwright 1.61.1, `retries: 0`.
 - Projects run locally: chromium, webkit, mobile-chrome (Pixel 7), under `CI=1` (2 workers). **Firefox cannot launch on this machine**; its coverage comes from CI.
 
-## Verdict: BLOCKED (1 defect)
+## Verdict: SIGN-OFF, pending one green CI run on the pushed fixes
 
-| ID | Severity | Owner | Summary |
-| --- | --- | --- | --- |
-| D1 | Major | frontend-dev | Drag-and-drop reorder moves the wrong story (see below) |
+No open product defects. D1 was found, fixed (16d000a) and verified. Local verification, `CI=1` (2 workers), chromium + webkit + mobile-chrome, build 16d000a plus the test fixes below: **four consecutive full runs, each 620 passed, 2 skipped by design, 0 failed** (fin1 to fin4; fin4 includes the final harness edits). Firefox cannot launch on this machine; it is covered by CI only. The CI run on 16d000a had 6 failures in chromium, webkit and firefox. All six are test-harness problems (triage below), now fixed. The third "green run" required by the definition is the CI run on the commit that contains these fixes; sign-off is conditional on it.
 
-Everything else passes. Two full runs (`CI=1`, 2 workers) on chromium, webkit and mobile-chrome after the test fixes: 618 passed, 2 skipped by design, 2 failed. The two failures are the same test, the drag test (D1), on chromium and webkit. The mobile project does not run it (`@desktop-only`). Not yet done: the third green run (needs D1 fixed), Firefox in CI, the manual items below.
+| ID | Severity | Owner | Summary | Status |
+| --- | --- | --- | --- | --- |
+| D1 | Major | frontend-dev | Drag-and-drop reorder moved the wrong story | Fixed in 16d000a, verified |
 
 ## Defects
 
-### D1 (major, frontend-dev): dragging a story moves a different story
+### D1 (major, frontend-dev): dragging a story moved a different story. FIXED (16d000a), verified
 
-- **Steps:** Story list mode, facilitator, agenda One, Two, Three. Press on the grip (⋮⋮) of "Three", move up past "One" with the mouse, release.
-- **Expected:** order Three, One, Two (`move_story {storyId: Three, beforeId: One}`).
-- **Actual:** the drag preview shows "Three", but the agenda ends as Two, Three, One. The client sends `move_story {storyId: One, beforeId: null}`.
-- **Same for other drags:** drag Two onto One, Three onto Two, and One onto Three all produce the same result: One goes to the end. The story that moves is always the first one.
-- **Evidence it is the app, not the harness:** wrapping `AgendaPanel.onDrop` in the page (`ng.getComponent`) logs the CDK event: `drop previousIndex=0 currentIndex=2` for the drag of Three to the top. Indices are reversed (expected 2 and 0), so `onDrop` computes `ids[0]` = One. The drag itself starts (`.cdk-drag-preview` present, placeholder shown), the viewport was 1280x1600 so nothing auto-scrolls, and the wire message is `{storyId: One, beforeId: null}`. It fails on chromium and webkit, in 6 of 6 runs (including two full CI-condition runs). The harness only produces pointer events. Likely cause is in how `cdkDropList`/`cdkDrag` items are ordered in `agenda-panel.ts` (`@for` with `track view.row.id`, custom placeholder); the owner should check `event.previousIndex`/`currentIndex` against `views()`.
-- **Test:** `F02-AC4: dragging a story with the mouse reorders the agenda for everyone` (`stories-manage.spec.ts`). Keyboard and button reorder (same file) pass.
-- **Note:** frontend-dev's smoke script did not cover drag-and-drop.
+- **Steps:** Story list mode, facilitator, agenda One, Two, Three. Press on the grip of "Three", move up past "One" with the mouse, release.
+- **Expected / actual:** expected Three, One, Two; actual Two, Three, One (the client sent `move_story {storyId: One, beforeId: null}`).
+- **Evidence it was the app:** the CDK `cdkDropListDropped` event carried `previousIndex=0, currentIndex=2` (reversed) for that drag; the drag preview showed "Three"; viewport tall enough for no auto-scroll; every drag pair moved the first story to the end; chromium and webkit, 6 of 6.
+- **Root cause (frontend-dev):** the CDK drag placeholder was `display: none`, so CDK sorted against a zero-size rectangle. It is now a visible box sized to the dragged row. No index math or test IDs changed.
+- **Regression guard:** e2e `F02-AC4: dragging a story with the mouse reorders the agenda for everyone` (`stories-manage.spec.ts`; no component test is possible, jsdom has no layout). Verified: 10 of 10 on chromium and webkit after the fix, and green in all four full runs.
 
 ## Test bugs found and fixed in `e2e/` (not product defects)
 
@@ -45,16 +43,28 @@ First run of the new suite: 25 failures on chromium (CI: 24 chromium, 13 mobile,
 | Pointer drag started from the row, not the grip, and from a point below the viewport | start at the grip, scroll into view, tall viewport |
 | **Heartbeat:** the F01 test config (250 ms ping, connection declared dead after 375 ms) made the page reconnect on a loaded runner and swallow the next UI click ("You are not connected"), seen on webkit and mobile in story specs | story rooms use a 2 s ping (`makeStoryRoom`, `clientConfig` option) |
 
-Not changed: two F01 reconnect tests (`connection.spec.ts` "changes made by others while offline", "removed while offline") and one claim test fail about 1 in 100 with the 250 ms heartbeat under 4 workers on HEAD, with the same "not connected" symptom. I reproduced the symptom on this machine on HEAD and did not on the F01 base commit `11ef34f` in 156 repeats, so it may be a regression of the F02 build, or load. **Open question for the orchestrator; not filed as a defect:** these did not fail in the two full runs (2 workers); I could not isolate whether the app's reconnect logic changed in F02. CI will show whether they recur.
+### Second round: CI run on 16d000a (chromium, firefox, webkit failed; mobile-chrome passed)
+
+All six failures were harness, none reproduced in four local full runs:
+
+| Failing test | Cause | Fix |
+| --- | --- | --- |
+| firefox `stories-a11y.spec.ts:69` (axe, story room screens) | the test skipped a story with the round id taken from the browser recorder, which was behind the raw client (`stale_round`) | uses the raw client's own round (`skipStory`) |
+| chromium `stories-a11y.spec.ts:156` (axe, 200 stories), also in the cancelled run 38657780102 | axe over a 200-row page took 31 s on the runner against the 30 s default timeout ("target closed" is the timeout teardown) | `test.slow()` |
+| chromium `connection.spec.ts:244` (F01-AC30 raw snapshot compare) | race in the F01 test: the baseline was read from the observer's state before the observer had received Ben going offline (the wait was on the facilitator's state) | wait for the observer's state too |
+| webkit `vote.spec.ts:58` and `:72` (F01-AC10); chromium `stories-voting.spec.ts:79` ("socket hang up" on `POST /api/rooms`) | load on the 2-core runner: the F01 test heartbeat (250 ms ping, page declares the connection dead after 375 ms) makes the page reconnect when the runner stalls, and the next click fails ("not connected", cards `aria-disabled` with `data-pending`). The API call hung up while the runner was starved (the chromium job took 7 m 54 s instead of about 5 m) | the page ping now follows the room's server heartbeat timeout (a third of it, at most 1 s) in `World.join`; story rooms and late joiners use the same rule |
+
+**Open question from the first round, resolved as harness/load:** the 1-in-100 F01 reconnect/claim failures with the 250 ms heartbeat ("You are not connected") are this same pattern. They did not appear in four full runs after the heartbeat change (plus 312 targeted repeats on chromium and webkit: connection, presence, vote, a11y specs). I could not show any F02 change in the app's reconnect logic, and did not reproduce it on the F01 base commit either at the 2-worker load, so it is recorded as a harness sensitivity under CPU load, not a product defect. If CI still shows "not connected" failures after these fixes, that would point at the runner or app and should be re-opened.
 
 ## Results (CI=1, 2 workers)
 
-| Run | chromium | webkit | mobile-chrome | Failing |
-| --- | --- | --- | --- | --- |
-| full3 | pass except 1 | pass except 1 | pass | drag test (D1) on chromium and webkit |
-| full4 | same | same | same | same |
+| Run | Build | Result |
+| --- | --- | --- |
+| full3, full4 | 7c3fb66 + test fixes | 618 passed, 2 skipped, 2 failed (drag test, D1, chromium and webkit) |
+| fin1, fin2, fin3 | 16d000a + test fixes | 620 passed, 2 skipped, 0 failed each |
+| fin4 | 16d000a + final test fixes | 620 passed, 2 skipped, 0 failed |
 
-Totals per run: 618 passed, 2 skipped, 2 failed. The skipped tests are by design. No test was retried.
+The skipped tests are by design (the phone-layout test on desktop projects). No test was retried (`retries: 0`).
 
 ## Traceability: criterion to tests to result
 
@@ -65,7 +75,7 @@ Counts are distinct tests carrying the ID on chromium. `-g "F02-AC4"` selects th
 | AC1 | 9 | stories-protocol, stories-manage | pass |
 | AC2 | 40 | stories-protocol, stories-manage | pass |
 | AC3 | 9 | stories-protocol, stories-manage | pass |
-| AC4 | 16 | stories-protocol, stories-manage | pass except drag (D1) |
+| AC4 | 16 | stories-protocol, stories-manage | pass |
 | AC5 | 5 | stories-protocol, stories-manage | pass |
 | AC6 | 9 | stories-protocol, stories-voting | pass |
 | AC7 | 5 | stories-protocol, stories-voting | pass |
@@ -79,7 +89,7 @@ Counts are distinct tests carrying the ID on chromium. `-g "F02-AC4"` selects th
 | AC15 | 17 | stories-protocol, stories-estimate | pass |
 | AC16 | 10 | stories-protocol, stories-agenda, test-mode-off | pass |
 | AC17 | 5 | stories-protocol, stories-agenda | pass |
-| AC18 | 0 | backend log-capture test (backend-dev) | not covered here, see gaps |
+| AC18 | 0 | backend log-capture test (`apps/api/test/stories.test.ts`) | reviewed, see below |
 | AC19 | 8 | stories-a11y (axe, keyboard-only, live regions, tab stops) | pass |
 | AC20 | 2 | stories-protocol | pass |
 | AC21 | 1 | stories-protocol | pass |
@@ -105,7 +115,7 @@ Counts are distinct tests carrying the ID on chromium. `-g "F02-AC4"` selects th
 
 ## Gaps and notes
 
-- **AC18** (no story content in logs): needs the backend log-capture test; not an e2e check. QA to review that test at sign-off.
+- **AC18 backend log test review** (`apps/api/test/stories.test.ts`, "F02-AC18"): adequate. It spies on `console.log/warn/error` while adding single and bulk stories (with unique needle strings in title, description, link, bulk titles), selecting, voting with a custom-deck card, accepting, an invalid edit (`ftp://` link), removing a participant (name erased in the snapshot), seeding and the storage hook, then asserts no needle (including the participant name and the card values) appears in any log line. Residual gaps, not blocking: it covers only `console` output of the room object (not Worker-level logs of the HTTP hooks), it does not assert the content of error `message` fields sent to clients (the e2e bulk test asserts the offending line text is not echoed), and the rejected paths for `add_stories` with an over-long line are not in the log capture.
 - AC20 "client coalesces repeated keyboard moves": the keyboard reorder test passes, but there is no message-count assertion.
 - Mobile: `story-count` and the collapsed-agenda toggle are only exercised through the page object.
 - Spec wording to check: a skipped story that is active shows only "active"; its skipped state is not visible until it is left.

@@ -25,6 +25,8 @@ export interface RoomHandle {
   facilitatorId: string;
   facilitatorToken: string;
   settingsInput: RoomSettingsInput;
+  /** Server heartbeat timeout set for this room by the test, if any (shapes the client ping). */
+  heartbeatTimeoutMs?: number;
   setTimers(t: TestTimersRequest): Promise<void>;
 }
 
@@ -74,6 +76,18 @@ export interface BrowserPool {
 }
 const MAX_CONTEXTS_PER_BROWSER = 30;
 
+/**
+ * The page declares its connection dead after 1.5 x `pingIntervalMs` without inbound frames. The
+ * old fixed 250 ms (dead after 375 ms) made the page reconnect whenever a loaded CI runner stalled
+ * for a moment, and the next UI action then failed with "not connected" (seen on webkit and
+ * chromium in CI on 16d000a). Ping as slowly as the room's server-side heartbeat allows: a third
+ * of the server timeout, at most 1 s.
+ */
+function pingFor(heartbeatTimeoutMs?: number): Partial<PokrTestConfig> {
+  if (heartbeatTimeoutMs === undefined) return { pingIntervalMs: 1000 };
+  return { pingIntervalMs: Math.min(1000, Math.max(100, Math.floor(heartbeatTimeoutMs / 3))) };
+}
+
 export class World {
   private contexts: BrowserContext[] = [];
   private raws: RawClient[] = [];
@@ -99,7 +113,10 @@ export class World {
       facilitatorId: res.participantId,
       facilitatorToken: res.token,
       settingsInput: opts.settings ?? {},
-      setTimers: (t) => this.api.setTimers(res.roomId, t),
+      setTimers: async (t) => {
+        if (t.heartbeatTimeoutMs !== undefined) handle.heartbeatTimeoutMs = t.heartbeatTimeoutMs;
+        await this.api.setTimers(res.roomId, t);
+      },
     };
     if (opts.timers) await handle.setTimers(opts.timers);
     return handle;
@@ -131,7 +148,10 @@ export class World {
   }
 
   async join(room: RoomHandle, opts: JoinOptions): Promise<Participant> {
-    const context = await this.newContext({}, opts.clientConfig);
+    const context = await this.newContext(
+      {},
+      opts.clientConfig ?? pingFor(room.heartbeatTimeoutMs),
+    );
     const rec = new FrameRecorder();
     let net: NetControl | null = null;
     if (opts.net) {

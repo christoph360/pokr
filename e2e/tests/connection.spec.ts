@@ -261,6 +261,11 @@ test.describe('hibernation (F01-AC30)', () => {
         (s) => s.participants.some((p) => p.name === 'Ben' && !p.online),
         'Ben offline',
       );
+      // The observer must have seen the same presence before it is used as the baseline.
+      await o.waitForState(
+        (s) => s.participants.some((p) => p.name === 'Ben' && !p.online),
+        'Ben offline for the observer',
+      );
       const before = structuredClone(o.state!);
 
       await world.api.evict(room.roomId, 'drop_memory');

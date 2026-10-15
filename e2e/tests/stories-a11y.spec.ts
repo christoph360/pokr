@@ -3,7 +3,7 @@ import { MAX_STORIES, STORY_DESCRIPTION_MAX } from '@pokr/shared';
 import { expect, test } from '../fixtures';
 import { makeStoryRoom, sp } from '../fixtures/story-room';
 import { expectNoSeriousA11yViolations } from '../helpers/a11y';
-import { estimate, expectOk, selectStory } from '../helpers/stories';
+import { estimate, expectOk, selectStory, skipStory } from '../helpers/stories';
 
 const cross = { tag: '@cross-browser' };
 const chromiumOnly = { tag: '@chromium-only' };
@@ -79,12 +79,7 @@ test.describe('F02 axe scans (AC19)', () => {
       await expectNoSeriousA11yViolations(fac.page, testInfo, 'story-idle-facilitator');
       await expectNoSeriousA11yViolations(vera.page, testInfo, 'story-idle-voter');
       await estimate(raw, ids['Done story']!, '5');
-      expectOk(
-        await raw.command('skip_story', {
-          storyId: ids['Skipped story']!,
-          round: fac.rec.lastState!.round.number,
-        }),
-      );
+      expectOk(await skipStory(raw, ids['Skipped story']!));
       expectOk(
         await raw.command('edit_story', {
           storyId: ids['Active story']!,
@@ -157,6 +152,8 @@ test.describe('F02 axe scans (AC19)', () => {
     'F02-AC19: an agenda of 200 stories has no serious or critical violations',
     chromiumOnly,
     async ({ world }, testInfo) => {
+      // axe over a 200-row page takes tens of seconds on a CI runner (31 s seen against the 30 s limit).
+      test.slow();
       const { room, fac, others } = await makeStoryRoom(world, [{ name: 'Vera' }]);
       await world.api.seedStories(room.roomId, {
         count: MAX_STORIES,
