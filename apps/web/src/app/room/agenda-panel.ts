@@ -13,7 +13,7 @@ import {
   untracked,
 } from '@angular/core';
 import { CdkDrag, CdkDragPlaceholder, CdkDragHandle, CdkDropList } from '@angular/cdk/drag-drop';
-import type { CdkDragDrop } from '@angular/cdk/drag-drop';
+import type { CdkDragDrop, CdkDragStart } from '@angular/cdk/drag-drop';
 import { MAX_STORIES, displayStatus } from '@pokr/shared';
 import type {
   AgendaStory,
@@ -158,6 +158,7 @@ const MOVE_DELAY_MS = 300;
                 class="story"
                 cdkDrag
                 cdkDragLockAxis="y"
+                (cdkDragStarted)="onDragStarted($event)"
                 [cdkDragDisabled]="!canManage()"
                 data-testid="story-row"
                 [attr.data-story-id]="view.row.id"
@@ -507,6 +508,12 @@ export class AgendaPanel {
     if (outcome.changed) {
       this.message.set(t.movedTo(row.title, outcome.position, outcome.total));
     }
+  }
+
+  /** Give the placeholder the dragged row's height so the rows below keep their positions. */
+  protected onDragStarted(event: CdkDragStart): void {
+    const height = event.source.element.nativeElement.offsetHeight;
+    this.host.nativeElement.style.setProperty('--drag-height', `${height}px`);
   }
 
   protected onDrop(event: CdkDragDrop<unknown>): void {

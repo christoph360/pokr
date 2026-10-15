@@ -799,9 +799,13 @@ textarea {
     min-height: 2.25rem;
   }
 
-  &__placeholder,
-  &__preview {
-    display: none;
+  // Shown in the list while a row is dragged. It must take up space (never display: none): the drop
+  // list reads its rectangle to work out the indices.
+  &__placeholder {
+    min-height: var(--drag-height, 4.5rem);
+    border: 2px dashed var(--primary);
+    border-radius: var(--radius);
+    background: var(--accent-bg);
   }
 }
 
