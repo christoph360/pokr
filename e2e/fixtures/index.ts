@@ -73,8 +73,25 @@ export interface BrowserPool {
   browser: Browser;
   used: number;
   relaunch(): Promise<void>;
+  /** Probe the browser with a throw-away page; relaunch it when it does not answer in time. */
+  ensureHealthy(): Promise<void>;
 }
-const MAX_CONTEXTS_PER_BROWSER = 30;
+// CI run 39031808167 (webkit, 2 workers): late in a worker's life the pooled browser stopped
+// answering: pages sat at "Joining the room..." (their WebSocket never completed), single actions
+// took 4 s, and `browser.close()` then hung for the whole 30 s teardown limit, failing two
+// unrelated tests. That was at roughly 30 contexts per browser, so contexts are kept lower, the
+// browser is probed before every test, and no close may block a test for more than a few seconds.
+const MAX_CONTEXTS_PER_BROWSER = 12;
+const PROBE_TIMEOUT_MS = 8_000;
+const CLOSE_TIMEOUT_MS = 8_000;
+
+/** Close without ever blocking longer than `CLOSE_TIMEOUT_MS` (a hung browser is abandoned; the worker's exit reaps it). */
+async function closeBounded(browser: Browser): Promise<void> {
+  await Promise.race([
+    browser.close().catch(() => undefined),
+    new Promise<void>((resolve) => setTimeout(resolve, CLOSE_TIMEOUT_MS)),
+  ]);
+}
 
 /**
  * The page declares its connection dead after 1.5 x `pingIntervalMs` without inbound frames. The
@@ -247,13 +264,33 @@ export const test = base.extend<{ world: World }, { browserPool: BrowserPool }>(
         browser: await browserType.launch(options),
         used: 0,
         async relaunch() {
-          await this.browser.close().catch(() => undefined);
+          await closeBounded(this.browser);
           this.browser = await browserType.launch(options);
           this.used = 0;
         },
+        async ensureHealthy() {
+          const probe = async (): Promise<boolean> => {
+            const timeout = new Promise<boolean>((resolve) =>
+              setTimeout(() => resolve(false), PROBE_TIMEOUT_MS),
+            );
+            const run = (async (): Promise<boolean> => {
+              const context = await this.browser.newContext();
+              try {
+                const page = await context.newPage();
+                await page.goto('about:blank');
+                return (await page.evaluate(() => 1 + 1)) === 2;
+              } finally {
+                void context.close().catch(() => undefined);
+              }
+            })().catch(() => false);
+            return Promise.race([run, timeout]);
+          };
+          this.used += 1;
+          if (!(await probe())) await this.relaunch();
+        },
       };
       await use(pool);
-      await pool.browser.close().catch(() => undefined);
+      await closeBounded(pool.browser);
     },
     { scope: 'worker' },
   ],
@@ -262,6 +299,7 @@ export const test = base.extend<{ world: World }, { browserPool: BrowserPool }>(
     use,
   ) => {
     if (browserPool.used >= MAX_CONTEXTS_PER_BROWSER) await browserPool.relaunch();
+    await browserPool.ensureHealthy();
     const request = await playwright.request.newContext();
     const api = new ApiClient(request, uniqueKey('api'));
     const ctxOptions: Record<string, unknown> = {

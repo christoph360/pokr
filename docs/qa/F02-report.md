@@ -124,3 +124,12 @@ Counts are distinct tests carrying the ID on chromium. `-g "F02-AC4"` selects th
 
 - Story specs after the heartbeat fix: no flake in two full runs plus 15 to 30 repeats of the previously failing tests.
 - F01 reconnect and claim tests with the 250 ms heartbeat: rare failures under 4 workers (see above); not seen with 2 workers.
+
+## Addendum: webkit CI failure on PR #1 (run 39031808167, commit ba0fc3e)
+
+Two F01 tests (`reveal.spec.ts:104` F01-AC17 and `:137` F01-AC18) failed on webkit only, at the end of one worker's run; chromium, firefox and mobile-chrome passed.
+
+- **Cause (from the run's trace and error-context artifacts): the pooled Playwright WebKit browser stopped answering, the same family as the F01 context-pool hang. Not a product defect.** Both pages were stuck on "Joining the room..." (one also on "Reconnecting..."): their WebSocket upgrade never completed (trace network: `ws://.../api/rooms/<id>/ws`, no response), while the same test's HTTP calls returned 200/201. Single browser actions took seconds (a `fill` took 4 s, a `check` 4 s), the 5 s `expectInRoom` then expired, and afterwards `browser.close()` hung for the whole 30 s fixture-teardown limit ("Fixture browserPool timeout of 30000ms exceeded during teardown"), which is why the same test reports two errors. The `[vite] ws proxy ECONNRESET/EPIPE` lines are noise: they appear around passing tests too.
+- **F02 load is a contributing factor:** webkit now runs 109 `@cross-browser` tests (F01 61 + F02 48) on 2 workers instead of 61, so each worker's browser lives roughly twice as long, and the hang appeared at about the 30-context relaunch threshold after the hang point seen in F01 (about 63 contexts without relaunch).
+- **Fix (all in `e2e/fixtures/index.ts`):** relaunch the browser after 12 contexts (was 30); probe the browser before every test with a throw-away page and relaunch it if it does not answer within 8 s; every browser close is bounded to 8 s so a hung close can no longer fail a test's teardown. No test was retried or loosened.
+- **Verification:** local macOS cannot reproduce the hang (this class of failure appeared only on the Linux CI runner). Three consecutive `CI=1` webkit runs: 109 passed, 1 skipped each; chromium + mobile-chrome: 511 passed, 1 skipped. The effect of the fix on the CI hang itself can only be confirmed by repeated CI runs on webkit; if it recurs, the probe will relaunch the browser instead of failing the test, and the hung browser is abandoned instead of blocking teardown.
