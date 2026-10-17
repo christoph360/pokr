@@ -25,6 +25,8 @@ export interface RoomHandle {
   facilitatorId: string;
   facilitatorToken: string;
   settingsInput: RoomSettingsInput;
+  /** Server heartbeat timeout set for this room by the test, if any (shapes the client ping). */
+  heartbeatTimeoutMs?: number;
   setTimers(t: TestTimersRequest): Promise<void>;
 }
 
@@ -71,8 +73,37 @@ export interface BrowserPool {
   browser: Browser;
   used: number;
   relaunch(): Promise<void>;
+  /** Probe the browser with a throw-away page; relaunch it when it does not answer in time. */
+  ensureHealthy(): Promise<void>;
 }
-const MAX_CONTEXTS_PER_BROWSER = 30;
+// CI run 39031808167 (webkit, 2 workers): late in a worker's life the pooled browser stopped
+// answering: pages sat at "Joining the room..." (their WebSocket never completed), single actions
+// took 4 s, and `browser.close()` then hung for the whole 30 s teardown limit, failing two
+// unrelated tests. That was at roughly 30 contexts per browser, so contexts are kept lower, the
+// browser is probed before every test, and no close may block a test for more than a few seconds.
+const MAX_CONTEXTS_PER_BROWSER = 12;
+const PROBE_TIMEOUT_MS = 8_000;
+const CLOSE_TIMEOUT_MS = 8_000;
+
+/** Close without ever blocking longer than `CLOSE_TIMEOUT_MS` (a hung browser is abandoned; the worker's exit reaps it). */
+async function closeBounded(browser: Browser): Promise<void> {
+  await Promise.race([
+    browser.close().catch(() => undefined),
+    new Promise<void>((resolve) => setTimeout(resolve, CLOSE_TIMEOUT_MS)),
+  ]);
+}
+
+/**
+ * The page declares its connection dead after 1.5 x `pingIntervalMs` without inbound frames. The
+ * old fixed 250 ms (dead after 375 ms) made the page reconnect whenever a loaded CI runner stalled
+ * for a moment, and the next UI action then failed with "not connected" (seen on webkit and
+ * chromium in CI on 16d000a). Ping as slowly as the room's server-side heartbeat allows: a third
+ * of the server timeout, at most 1 s.
+ */
+function pingFor(heartbeatTimeoutMs?: number): Partial<PokrTestConfig> {
+  if (heartbeatTimeoutMs === undefined) return { pingIntervalMs: 1000 };
+  return { pingIntervalMs: Math.min(1000, Math.max(100, Math.floor(heartbeatTimeoutMs / 3))) };
+}
 
 export class World {
   private contexts: BrowserContext[] = [];
@@ -99,7 +130,10 @@ export class World {
       facilitatorId: res.participantId,
       facilitatorToken: res.token,
       settingsInput: opts.settings ?? {},
-      setTimers: (t) => this.api.setTimers(res.roomId, t),
+      setTimers: async (t) => {
+        if (t.heartbeatTimeoutMs !== undefined) handle.heartbeatTimeoutMs = t.heartbeatTimeoutMs;
+        await this.api.setTimers(res.roomId, t);
+      },
     };
     if (opts.timers) await handle.setTimers(opts.timers);
     return handle;
@@ -131,7 +165,10 @@ export class World {
   }
 
   async join(room: RoomHandle, opts: JoinOptions): Promise<Participant> {
-    const context = await this.newContext({}, opts.clientConfig);
+    const context = await this.newContext(
+      {},
+      opts.clientConfig ?? pingFor(room.heartbeatTimeoutMs),
+    );
     const rec = new FrameRecorder();
     let net: NetControl | null = null;
     if (opts.net) {
@@ -227,13 +264,33 @@ export const test = base.extend<{ world: World }, { browserPool: BrowserPool }>(
         browser: await browserType.launch(options),
         used: 0,
         async relaunch() {
-          await this.browser.close().catch(() => undefined);
+          await closeBounded(this.browser);
           this.browser = await browserType.launch(options);
           this.used = 0;
         },
+        async ensureHealthy() {
+          const probe = async (): Promise<boolean> => {
+            const timeout = new Promise<boolean>((resolve) =>
+              setTimeout(() => resolve(false), PROBE_TIMEOUT_MS),
+            );
+            const run = (async (): Promise<boolean> => {
+              const context = await this.browser.newContext();
+              try {
+                const page = await context.newPage();
+                await page.goto('about:blank');
+                return (await page.evaluate(() => 1 + 1)) === 2;
+              } finally {
+                void context.close().catch(() => undefined);
+              }
+            })().catch(() => false);
+            return Promise.race([run, timeout]);
+          };
+          this.used += 1;
+          if (!(await probe())) await this.relaunch();
+        },
       };
       await use(pool);
-      await pool.browser.close().catch(() => undefined);
+      await closeBounded(pool.browser);
     },
     { scope: 'worker' },
   ],
@@ -242,6 +299,7 @@ export const test = base.extend<{ world: World }, { browserPool: BrowserPool }>(
     use,
   ) => {
     if (browserPool.used >= MAX_CONTEXTS_PER_BROWSER) await browserPool.relaunch();
+    await browserPool.ensureHealthy();
     const request = await playwright.request.newContext();
     const api = new ApiClient(request, uniqueKey('api'));
     const ctxOptions: Record<string, unknown> = {

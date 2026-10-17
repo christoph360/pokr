@@ -19,6 +19,16 @@ export function normalizeText(input: string): string {
   return input.normalize('NFC').replace(/\s+/gu, ' ').trim();
 }
 
+/** Length in UTF-8 bytes (lone surrogates count as 3, like TextEncoder's U+FFFD). */
+export function utf8ByteLength(input: string): number {
+  let n = 0;
+  for (const ch of input) {
+    const cp = ch.codePointAt(0)!;
+    n += cp < 0x80 ? 1 : cp < 0x800 ? 2 : cp < 0x10000 ? 3 : 4;
+  }
+  return n;
+}
+
 /** Length in Unicode grapheme clusters. */
 export function graphemeLength(input: string): number {
   segmenter ??= new Intl.Segmenter('en', { granularity: 'grapheme' });
@@ -44,5 +54,49 @@ export function textSchema({ min, max }: TextLimits) {
     v.transform(normalizeText),
     v.check((s) => graphemeLength(s) >= min, `must be at least ${min} characters`),
     v.check((s) => graphemeLength(s) <= max, `must be at most ${max} characters`),
+  );
+}
+
+/** Like FORBIDDEN but newline (LF, CR) and tab are allowed: multi-line text such as story descriptions. */
+const FORBIDDEN_MULTILINE = /[\p{Cc}\p{Zl}\p{Zp}]/u;
+
+export function containsForbiddenMultilineChars(input: string): boolean {
+  return FORBIDDEN_MULTILINE.test(input.replace(/[\n\r\t]/gu, ''));
+}
+
+/**
+ * Multi-line normalization (F02 descriptions): Unicode NFC, CRLF and CR become LF, leading blank
+ * lines and trailing whitespace are removed. Internal spaces, tabs, indentation and trailing double
+ * spaces (Markdown hard breaks) are kept: Markdown is whitespace-sensitive. Deliberately not
+ * `normalizeText`, which would collapse newlines.
+ */
+export function normalizeMultiline(input: string): string {
+  return input
+    .normalize('NFC')
+    .replace(/\r\n?/gu, '\n')
+    .replace(/^\s*\n/u, '')
+    .replace(/\s+$/u, '');
+}
+
+/**
+ * Schema for multi-line free text. Length is counted in grapheme clusters of the normalized
+ * output, like every other F01/F02 text (a newline is one grapheme). Empty output is allowed.
+ */
+export function multilineTextSchema({
+  max,
+  maxBytes,
+  rawMaxUnits,
+}: {
+  max: number;
+  maxBytes: number;
+  rawMaxUnits: number;
+}) {
+  return v.pipe(
+    v.string(),
+    v.maxLength(rawMaxUnits),
+    v.check((s) => !containsForbiddenMultilineChars(s), 'must not contain control characters'),
+    v.transform(normalizeMultiline),
+    v.check((s) => graphemeLength(s) <= max, `must be at most ${max} characters`),
+    v.check((s) => utf8ByteLength(s) <= maxBytes, `must be at most ${maxBytes} bytes`),
   );
 }

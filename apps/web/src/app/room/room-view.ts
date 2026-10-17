@@ -19,7 +19,9 @@ import {
   resolveDeck,
   roomPagePath,
 } from '@pokr/shared';
-import type { Role, RoomState } from '@pokr/shared';
+import { composeActiveStory, isIdle } from '@pokr/shared';
+import type { HeldAgenda, Role, RoomState } from '@pokr/shared';
+import { StoryActions } from '../core/story-actions';
 import { CommandError, RoomConnection } from '../core/room-connection';
 import type { CommandInput } from '../core/room-connection';
 import {
@@ -33,7 +35,12 @@ import { errorText, textValidator } from '../core/text-validator';
 import { STRINGS } from '../i18n/strings';
 import { ConfirmDialog } from '../ui/confirm-dialog';
 import { ModalDialog } from '../ui/modal-dialog';
+import { ActiveStory } from './active-story';
+import { AgendaPanel } from './agenda-panel';
 import { CardGrid } from './card-grid';
+import { EstimatePicker } from './estimate-picker';
+import { StoryAnnouncer } from './story-announcer';
+import { StoryConfirm } from './story-confirm';
 import { ParticipantList } from './participant-list';
 import { SettingsDialog } from './settings-dialog';
 import { SummaryPanel } from './summary-panel';
@@ -49,6 +56,11 @@ import { SummaryPanel } from './summary-panel';
     SettingsDialog,
     ConfirmDialog,
     ModalDialog,
+    ActiveStory,
+    AgendaPanel,
+    EstimatePicker,
+    StoryAnnouncer,
+    StoryConfirm,
   ],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
@@ -96,39 +108,48 @@ import { SummaryPanel } from './summary-panel';
         </div>
       </header>
 
-      <section class="topic" aria-labelledby="topic-heading">
-        <h3 id="topic-heading" class="visually-hidden">{{ t.room.topic }}</h3>
-        @if (s.topic) {
-          <p class="topic__text" data-testid="topic-display">{{ s.topic }}</p>
-        } @else {
-          <p class="topic__text topic__text--empty" data-testid="topic-empty">
-            {{ t.room.noTopic }}
-          </p>
-        }
-        @if (c.canManage) {
-          <form class="topic__form" (submit)="$event.preventDefault(); saveTopic()" novalidate>
-            <label for="topic-input" class="visually-hidden">{{ t.room.topicInput }}</label>
-            <input
-              id="topic-input"
-              data-testid="topic-input"
-              type="text"
-              autocomplete="off"
-              [placeholder]="t.room.topicInput"
-              [formControl]="topicCtl"
-              [attr.aria-invalid]="topicCtl.invalid ? 'true' : null"
-              [attr.aria-describedby]="topicCtl.invalid ? 'topic-error' : 'topic-hint'"
-            />
-            <button type="submit" class="btn btn--small" data-testid="topic-save">
-              {{ t.room.topicSave }}
-            </button>
-            @if (topicCtl.invalid) {
-              <p id="topic-error" class="error" data-testid="topic-error">{{ topicError() }}</p>
-            } @else {
-              <p id="topic-hint" class="hint">{{ t.room.topicHint }}</p>
-            }
-          </form>
-        }
-      </section>
+      @if (storyMode()) {
+        <app-active-story
+          [state]="s"
+          [agenda]="agenda()"
+          [canManage]="c.canManageStories"
+          [connected]="conn.connected()"
+        />
+      } @else {
+        <section class="topic" aria-labelledby="topic-heading">
+          <h3 id="topic-heading" class="visually-hidden">{{ t.room.topic }}</h3>
+          @if (s.topic) {
+            <p class="topic__text" data-testid="topic-display">{{ s.topic }}</p>
+          } @else {
+            <p class="topic__text topic__text--empty" data-testid="topic-empty">
+              {{ t.room.noTopic }}
+            </p>
+          }
+          @if (c.canManage) {
+            <form class="topic__form" (submit)="$event.preventDefault(); saveTopic()" novalidate>
+              <label for="topic-input" class="visually-hidden">{{ t.room.topicInput }}</label>
+              <input
+                id="topic-input"
+                data-testid="topic-input"
+                type="text"
+                autocomplete="off"
+                [placeholder]="t.room.topicInput"
+                [formControl]="topicCtl"
+                [attr.aria-invalid]="topicCtl.invalid ? 'true' : null"
+                [attr.aria-describedby]="topicCtl.invalid ? 'topic-error' : 'topic-hint'"
+              />
+              <button type="submit" class="btn btn--small" data-testid="topic-save">
+                {{ t.room.topicSave }}
+              </button>
+              @if (topicCtl.invalid) {
+                <p id="topic-error" class="error" data-testid="topic-error">{{ topicError() }}</p>
+              } @else {
+                <p id="topic-hint" class="hint">{{ t.room.topicHint }}</p>
+              }
+            </form>
+          }
+        </section>
+      }
 
       <div class="room__layout">
         <div class="room__main">
@@ -146,6 +167,8 @@ import { SummaryPanel } from './summary-panel';
                 <p class="hint" role="status" data-testid="cards-paused">
                   {{ t.room.cardsPaused }}
                 </p>
+              } @else if (idle()) {
+                <p class="hint" data-testid="cards-idle">{{ ts.noActive }}</p>
               } @else if (s.round.phase === 'revealed') {
                 <p class="hint" data-testid="cards-revealed">{{ t.room.cardsRevealed }}</p>
               }
@@ -163,12 +186,18 @@ import { SummaryPanel } from './summary-panel';
                 type="button"
                 class="btn btn--primary"
                 data-testid="reveal"
-                [attr.aria-disabled]="s.round.phase === 'revealed' ? 'true' : null"
+                [attr.aria-disabled]="s.round.phase === 'revealed' || idle() ? 'true' : null"
                 (click)="reveal()"
               >
                 {{ t.room.reveal }}
               </button>
-              <button type="button" class="btn" data-testid="reset" (click)="onReset()">
+              <button
+                type="button"
+                class="btn"
+                data-testid="reset"
+                [attr.aria-disabled]="idle() ? 'true' : null"
+                (click)="onReset()"
+              >
                 {{ t.room.reset }}
               </button>
             }
@@ -195,16 +224,23 @@ import { SummaryPanel } from './summary-panel';
           @if (failure()) {
             <p class="error" role="alert" data-testid="command-error">{{ failure() }}</p>
           }
+          @if (actions.error(); as storyError) {
+            <p class="error" role="alert" data-testid="story-error">{{ storyError }}</p>
+          }
 
           @if (summary(); as sum) {
             <app-summary-panel [summary]="sum" />
+          }
+          @if (showEstimate()) {
+            <app-estimate-picker [state]="s" [story]="activeRow()" [connected]="conn.connected()" />
           }
           @if (!c.canManage) {
             <p class="hint" data-testid="settings-summary">
               {{
                 t.settings.summaryLine(
                   t.decks[s.settings.deck.id],
-                  t.controlModes[s.settings.controlMode]
+                  t.controlModes[s.settings.controlMode],
+                  t.storySources[s.settings.storySource]
                 )
               }}
             </p>
@@ -212,6 +248,7 @@ import { SummaryPanel } from './summary-panel';
         </div>
 
         <aside class="room__side">
+          <app-agenda-panel [state]="s" [agenda]="agenda()" [canManage]="c.canManageStories" />
           <app-participant-list
             [state]="s"
             [extremes]="extremes()"
@@ -221,6 +258,9 @@ import { SummaryPanel } from './summary-panel';
           />
         </aside>
       </div>
+
+      <app-story-announcer [state]="s" [agenda]="agenda()" />
+      <app-story-confirm />
 
       <div class="visually-hidden" role="status" aria-live="polite" data-testid="reveal-announcer">
         {{ announcement() }}
@@ -289,10 +329,14 @@ import { SummaryPanel } from './summary-panel';
 export class RoomView {
   protected readonly t = STRINGS;
   protected readonly conn = inject(RoomConnection);
+  protected readonly actions = inject(StoryActions);
+  protected readonly ts = STRINGS.stories;
   private readonly doc = inject(DOCUMENT);
   private readonly fb = inject(NonNullableFormBuilder);
 
   readonly state = input.required<RoomState>();
+  /** The held agenda (F02-AC16), kept in step by the connection. */
+  readonly agenda = input<HeldAgenda | null>(null);
 
   private readonly urlEl = viewChild<ElementRef<HTMLElement>>('urlEl');
 
@@ -316,8 +360,21 @@ export class RoomView {
     return controlsFor(this.state(), this.conn.serverNow());
   });
   protected readonly cards = computed(() => resolveDeck(this.state().settings.deck));
+  protected readonly storyMode = computed(() => this.state().settings.storySource === 'stories');
+  /** Story list mode with no active story: no round to vote on (F02 Definitions). */
+  protected readonly idle = computed(() => isIdle(this.state().settings, this.state().stories));
+  protected readonly activeRow = computed(() =>
+    composeActiveStory(this.agenda(), this.state().stories.activeId),
+  );
+  protected readonly showEstimate = computed(
+    () =>
+      this.controls().canManageStories &&
+      this.storyMode() &&
+      this.state().round.phase === 'revealed' &&
+      this.activeRow() !== null,
+  );
   protected readonly cardsDisabled = computed(
-    () => !this.conn.connected() || this.state().round.phase === 'revealed',
+    () => !this.conn.connected() || this.state().round.phase === 'revealed' || this.idle(),
   );
   protected readonly summary = computed(() => {
     const round = this.state().round;
@@ -402,11 +459,12 @@ export class RoomView {
   }
 
   protected reveal(): void {
-    if (this.state().round.phase === 'revealed') return;
+    if (this.state().round.phase === 'revealed' || this.idle()) return;
     void this.run({ type: 'reveal' });
   }
 
   protected onReset(): void {
+    if (this.idle()) return;
     if (hasUnrevealedVotes(this.state())) this.resetConfirmOpen.set(true);
     else void this.doReset();
   }
@@ -419,7 +477,7 @@ export class RoomView {
   private async doReset(): Promise<void> {
     // An edited, valid topic is applied together with the reset (F01-AC19).
     let topic: string | undefined;
-    if (this.topicCtl.dirty) {
+    if (this.topicCtl.dirty && !this.storyMode()) {
       const checked = checkText(TopicSchema, 'topic', this.topicCtl.value);
       if (checked.ok && checked.value !== this.state().topic) topic = checked.value;
     }

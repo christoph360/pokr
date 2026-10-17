@@ -61,7 +61,7 @@ type Phase = 'checking' | 'not-found' | 'full' | 'join' | 'room';
           {{ conn.restored() ? t.connection.restored : '' }}
         </div>
         @if (conn.state(); as s) {
-          <app-room-view [state]="s" />
+          <app-room-view [state]="s" [agenda]="conn.agenda()" />
         } @else {
           <p class="panel panel--narrow" role="status" data-testid="room-loading">
             {{ t.room.loading }}

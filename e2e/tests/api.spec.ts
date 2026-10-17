@@ -86,6 +86,7 @@ test.describe('rooms API', () => {
         controlMode: 'everyone',
         autoReveal: true,
         facilitatorVotes: false,
+        storySource: 'topic',
       });
     },
   );

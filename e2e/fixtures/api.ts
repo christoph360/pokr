@@ -5,6 +5,9 @@ import type {
   CreateRoomResponse,
   RoomInfoResponse,
   TestEvictRequest,
+  TestSeedStoriesRequest,
+  TestSeedStoriesResponse,
+  TestStorageResponse,
   TestTimersRequest,
 } from '@pokr/shared';
 import { API_URL, CLIENT_KEY_HEADER } from '../helpers/env';
@@ -66,5 +69,31 @@ export class ApiClient {
     });
     expect(res.status(), 'test hook /instance').toBe(200);
     return ((await res.json()) as { instanceId: string }).instanceId;
+  }
+
+  /** H1/H4: seed stories (test mode). Returns the status so cap tests can assert the 409. */
+  async seedStoriesRaw(roomId: string, body: TestSeedStoriesRequest): Promise<APIResponse> {
+    return this.request.post(`${API_URL}/api/__test/rooms/${roomId}/stories`, {
+      data: body,
+      headers: this.headers(),
+    });
+  }
+
+  async seedStories(
+    roomId: string,
+    body: TestSeedStoriesRequest,
+  ): Promise<TestSeedStoriesResponse> {
+    const res = await this.seedStoriesRaw(roomId, body);
+    expect(res.status(), `seed stories: ${await res.text()}`).toBe(201);
+    return (await res.json()) as TestSeedStoriesResponse;
+  }
+
+  /** H2: what the room persists. */
+  async storage(roomId: string): Promise<TestStorageResponse> {
+    const res = await this.request.get(`${API_URL}/api/__test/rooms/${roomId}/storage`, {
+      headers: this.headers(),
+    });
+    expect(res.status(), 'test hook /storage').toBe(200);
+    return (await res.json()) as TestStorageResponse;
   }
 }

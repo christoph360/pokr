@@ -1,8 +1,8 @@
 import { ChangeDetectionStrategy, Component, ElementRef, inject, signal } from '@angular/core';
 import { FormControl, NonNullableFormBuilder, ReactiveFormsModule } from '@angular/forms';
 import { Router } from '@angular/router';
-import { DisplayNameSchema, RoomNameSchema } from '@pokr/shared';
-import type { ControlMode, CreateRoomRequest, Deck, DeckId } from '@pokr/shared';
+import { DisplayNameSchema, RoomNameSchema, STORY_SOURCES } from '@pokr/shared';
+import type { ControlMode, CreateRoomRequest, Deck, DeckId, StorySource } from '@pokr/shared';
 import { DECK_OPTIONS, checkText, parseCustomDeck } from '../core/room-logic';
 import { RoomApi } from '../core/room-api';
 import { TokenStore } from '../core/token-store';
@@ -106,6 +106,19 @@ import { STRINGS } from '../i18n/strings';
           </select>
         </div>
 
+        <div class="field">
+          <label for="start-story-source">{{ t.start.storySource }}</label>
+          <select
+            id="start-story-source"
+            data-testid="start-story-source"
+            formControlName="storySource"
+          >
+            @for (source of sources; track source) {
+              <option [value]="source">{{ t.storySources[source] }}</option>
+            }
+          </select>
+        </div>
+
         <div class="field field--check">
           <input
             id="start-auto-reveal"
@@ -145,6 +158,7 @@ export class StartPage {
   protected readonly t = STRINGS;
   protected readonly decks = DECK_OPTIONS;
   protected readonly modes: readonly ControlMode[] = ['facilitator', 'everyone'];
+  protected readonly sources = STORY_SOURCES;
 
   private readonly api = inject(RoomApi);
   private readonly tokens = inject(TokenStore);
@@ -172,6 +186,7 @@ export class StartPage {
         },
       }),
       controlMode: fb.control<ControlMode>('facilitator'),
+      storySource: fb.control<StorySource>('topic'),
       autoReveal: fb.control(false),
       facilitatorVotes: fb.control(true),
     });
@@ -216,6 +231,7 @@ export class StartPage {
         name: roomName.value,
         deck,
         controlMode: v.controlMode,
+        storySource: v.storySource,
         autoReveal: v.autoReveal,
         facilitatorVotes: v.facilitatorVotes,
       },

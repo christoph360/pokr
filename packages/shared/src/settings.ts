@@ -8,6 +8,8 @@ import {
 } from './constants';
 import { DEFAULT_DECK, DeckSchema } from './deck';
 import type { Deck } from './deck';
+import { StorySourceSchema } from './stories';
+import type { StorySource } from './stories';
 import { textSchema } from './text';
 
 export const CONTROL_MODES = ['facilitator', 'everyone'] as const;
@@ -34,6 +36,8 @@ export const RoomSettingsInputSchema = v.object({
   controlMode: v.optional(ControlModeSchema),
   autoReveal: v.optional(v.boolean()),
   facilitatorVotes: v.optional(v.boolean()),
+  /** F02-AC1. Changing it resets the round (needs `confirmReset` when the round has votes, like a deck change). */
+  storySource: v.optional(StorySourceSchema),
 });
 export type RoomSettingsInput = v.InferOutput<typeof RoomSettingsInputSchema>;
 
@@ -44,6 +48,8 @@ export const RoomSettingsSchema = v.object({
   controlMode: ControlModeSchema,
   autoReveal: v.boolean(),
   facilitatorVotes: v.boolean(),
+  /** Rooms stored before F02 have no value: treat as 'topic'. */
+  storySource: v.optional(StorySourceSchema, 'topic'),
 });
 export interface RoomSettings {
   name: string;
@@ -51,6 +57,7 @@ export interface RoomSettings {
   controlMode: ControlMode;
   autoReveal: boolean;
   facilitatorVotes: boolean;
+  storySource: StorySource;
 }
 
 /** Defaults from the product overview (F01-AC3). */
@@ -60,6 +67,7 @@ export const DEFAULT_SETTINGS: RoomSettings = {
   controlMode: 'facilitator',
   autoReveal: false,
   facilitatorVotes: true,
+  storySource: 'topic',
 };
 
 /** Apply a (partial) input on top of base settings. `undefined` fields keep the base value. */
@@ -70,5 +78,6 @@ export function applySettings(base: RoomSettings, input: RoomSettingsInput): Roo
     controlMode: input.controlMode ?? base.controlMode,
     autoReveal: input.autoReveal ?? base.autoReveal,
     facilitatorVotes: input.facilitatorVotes ?? base.facilitatorVotes,
+    storySource: input.storySource ?? base.storySource,
   };
 }

@@ -1,7 +1,7 @@
 import type { RoomSettingsInput, TestTimersRequest, Role } from '@pokr/shared';
 import { RoomPage } from '../helpers/room-page';
 import { FrameRecorder, NetControl } from '../helpers/ws-recorder';
-import type { Participant, RoomHandle, World } from './index';
+import type { Participant, PokrTestConfig, RoomHandle, World } from './index';
 
 export interface PersonSpec {
   name: string;
@@ -29,9 +29,12 @@ export async function makeRoom(
     timers?: TestTimersRequest;
     facilitatorName?: string;
     facilitatorNet?: boolean;
+    /** Client test config (e.g. a slower heartbeat); defaults to the fast F01 config. */
+    clientConfig?: Partial<PokrTestConfig>;
   } = {},
 ): Promise<Scenario> {
   const facName = opts.facilitatorName ?? 'Fiona';
+  const clientConfig = opts.clientConfig;
   const room = await world.createRoom({
     displayName: facName,
     ...(opts.settings ? { settings: opts.settings } : {}),
@@ -41,6 +44,7 @@ export async function makeRoom(
     name: facName,
     asFacilitator: true,
     ...(opts.facilitatorNet ? { net: true } : {}),
+    ...(clientConfig ? { clientConfig } : {}),
   });
   const others: Participant[] = [];
   for (const p of people) {
@@ -49,6 +53,7 @@ export async function makeRoom(
         name: p.name,
         ...(p.role ? { role: p.role } : {}),
         ...(p.net ? { net: true } : {}),
+        ...(clientConfig ? { clientConfig } : {}),
       }),
     );
   }

@@ -1,5 +1,7 @@
 import { DurableObject } from 'cloudflare:workers';
 import {
+  MAX_CLIENT_FRAME_CHARS,
+  MAX_STORIES,
   FACILITATOR_CLAIM_MS,
   HEARTBEAT_TIMEOUT_MS,
   JOIN_TIMEOUT_MS,
@@ -10,31 +12,56 @@ import {
   RATE_LIMITS,
   WS_CLOSE_CODES,
   applySettings,
+  canAcceptEstimate,
   canClaimFacilitator,
   canManageRoom,
+  canManageStories,
   canRevealOrReset,
+  canSelectStory,
+  canViewStory,
+  computeProgress,
   decksEqual,
+  graphemeLength,
   isCardInDeck,
+  isEstimateCard,
   isVoter,
+  moveStory,
+  nextStoryId,
+  parseBulkLines,
   parseClientMessage,
   serializeMessage,
   shouldAutoReveal,
+  sumEstimates,
+  valueCards,
 } from '@pokr/shared';
 import type {
+  AgendaStory,
   ClientMessage,
   CommandMessage,
   ErrorCode,
   RoomSettings,
+  FinalRound,
   RoomState,
   ServerMessage,
+  StoryDetail,
   TestEvictRequest,
+  TestSeedStoriesRequest,
+  TestSeedStoriesResponse,
+  TestStorageResponse,
   TestTimersRequest,
 } from '@pokr/shared';
 import { isTestMode } from './env';
 import type { AppEnv } from './env';
 import { log, logError } from './log';
 import { RoomStore } from './store';
-import type { LeftRow, ParticipantRow, RoomRecord } from './store';
+import type {
+  LeftRow,
+  ParticipantRow,
+  RoomRecord,
+  StoryLightRow,
+  StoryMeta,
+  StoryRow,
+} from './store';
 
 /** Per-connection data that survives hibernation (ADR 0001). Never holds names or votes. */
 interface Attachment {
@@ -44,6 +71,14 @@ interface Attachment {
 }
 
 type Fx = Array<() => void>;
+
+/** What a command may hand back for its reply: the new story IDs for `ack`, or a message to send before it. */
+type CommandResult = { storyIds?: string[]; reply?: ServerMessage };
+
+const confirmReset = (message: string) =>
+  new CommandError('confirmation_required', message, 'confirmReset');
+const limitReached = () =>
+  new CommandError('story_limit_reached', `a room holds at most ${MAX_STORIES} stories`);
 
 /** Two claims within this window of a successful claim answer `already_claimed` (F01-AC25). */
 const CLAIM_RACE_WINDOW_MS = 10_000;
@@ -98,7 +133,7 @@ function errorMessage(
 }
 
 function peekId(raw: string): string | undefined {
-  if (raw.length > 4096) return undefined;
+  if (raw.length > MAX_CLIENT_FRAME_CHARS) return undefined;
   try {
     const j = JSON.parse(raw) as { id?: unknown } | null;
     const id = j?.id;
@@ -136,6 +171,44 @@ function computeDisplay(
   }
 }
 
+const STORY_ID_ALPHABET = '0123456789abcdefghjkmnpqrstvwxyz';
+
+/** Server-generated story ID: 12 random lowercase Crockford base32 characters. */
+function newStoryId(): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(12));
+  let id = '';
+  for (const b of bytes) id += STORY_ID_ALPHABET[b % 32];
+  return id;
+}
+
+function toAgendaStory(r: StoryLightRow): AgendaStory {
+  return {
+    id: r.id,
+    title: r.title,
+    link: r.link,
+    hasDescription: r.has_description === 1,
+    status: r.status,
+    estimate: r.estimate,
+    rev: r.rev,
+    tracker: r.tracker === null ? null : (JSON.parse(r.tracker) as AgendaStory['tracker']),
+  };
+}
+
+function toDetail(r: StoryRow): StoryDetail {
+  return {
+    id: r.id,
+    title: r.title,
+    link: r.link,
+    hasDescription: r.description !== '',
+    status: r.status,
+    estimate: r.estimate,
+    rev: r.rev,
+    tracker: r.tracker === null ? null : (JSON.parse(r.tracker) as StoryDetail['tracker']),
+    description: r.description,
+    finalRound: r.final_round === null ? null : (JSON.parse(r.final_round) as FinalRound),
+  };
+}
+
 export type CreateRoomInput = {
   roomId: string;
   displayName: string;
@@ -158,6 +231,8 @@ export class RoomDurableObject extends DurableObject<AppEnv> {
   /** Tail of the work queue. Everything that reads-modifies-writes room state runs through `enqueue`. */
   private queue: Promise<unknown> = Promise.resolve();
   private readonly store: RoomStore;
+  /** Agenda rows and their serialized block for one agendaVersion: built once, shared by all recipients. Lost on eviction. */
+  private agendaCache: { version: number; rows: AgendaStory[]; json: string } | null = null;
 
   constructor(ctx: DurableObjectState, env: AppEnv) {
     super(ctx, env);
@@ -262,6 +337,7 @@ export class RoomDurableObject extends DurableObject<AppEnv> {
     this.instanceId = crypto.randomUUID();
     this.lastSeen.clear();
     this.msgTimes.clear();
+    this.agendaCache = null;
     if (mode === 'abort') setTimeout(() => this.ctx.abort('test eviction'), 20);
     return { previousInstanceId };
   }
@@ -638,6 +714,7 @@ export class RoomDurableObject extends DurableObject<AppEnv> {
         .participants()
         .map((p) => [p.id, p.display_name, p.role, p.vote, p.offline_since === null]),
       this.store.left(),
+      this.store.storyMeta(),
     ]);
   }
 
@@ -648,11 +725,12 @@ export class RoomDurableObject extends DurableObject<AppEnv> {
   private async commit<T>(
     fn: (fx: Fx) => T,
     pre?: () => void,
+    opts: { agendaFor?: WebSocket } = {},
   ): Promise<{ result: T; changed: boolean; version: number }> {
     // Only the transaction is retried: it rolls back completely on failure, so a retry cannot
     // double-apply. Everything after it (broadcast, effects) runs once.
     let attempt = 0;
-    let out: { result: T; changed: boolean; version: number; fx: Fx };
+    let out: { result: T; changed: boolean; version: number; fx: Fx; agendaChanged: boolean };
     for (;;) {
       try {
         out = this.transact(fn);
@@ -665,20 +743,29 @@ export class RoomDurableObject extends DurableObject<AppEnv> {
       }
     }
     pre?.();
-    if (out.changed) this.broadcast();
+    if (out.changed) this.broadcast(out.agendaChanged, opts.agendaFor);
     for (const f of out.fx) f();
     return { result: out.result, changed: out.changed, version: out.version };
   }
 
-  private transact<T>(fn: (fx: Fx) => T): { result: T; changed: boolean; version: number; fx: Fx } {
+  private transact<T>(fn: (fx: Fx) => T): {
+    result: T;
+    changed: boolean;
+    version: number;
+    fx: Fx;
+    agendaChanged: boolean;
+  } {
     const fx: Fx = [];
     let changed = false;
     let version = 0;
+    let agendaChanged = false;
     const result = this.ctx.storage.transactionSync(() => {
       const before = this.fingerprint();
+      const agendaBefore = this.store.storyMeta().agendaVersion;
       const r = fn(fx);
       this.autoReveal();
       version = this.store.room().version;
+      agendaChanged = this.store.storyMeta().agendaVersion !== agendaBefore;
       if (this.fingerprint() !== before) {
         version += 1;
         this.store.setVersion(version);
@@ -686,12 +773,13 @@ export class RoomDurableObject extends DurableObject<AppEnv> {
       }
       return r;
     });
-    return { result, changed, version, fx };
+    return { result, changed, version, fx, agendaChanged };
   }
 
   private autoReveal(): void {
     const room = this.store.room();
     if (room.phase !== 'voting') return;
+    if (this.isIdle(room)) return; // F02: auto-reveal never fires while idle
     const parts = this.store.participants().map((p) => ({
       id: p.id,
       role: p.role,
@@ -705,13 +793,17 @@ export class RoomDurableObject extends DurableObject<AppEnv> {
 
   // ---- projection ----
 
+  private isIdle(room: RoomRecord): boolean {
+    return room.settings.storySource === 'stories' && this.store.storyMeta().activeId === null;
+  }
+
   private buildState(
     room: RoomRecord,
     parts: ParticipantRow[],
     left: LeftRow[],
     selfId: string,
     now: number,
-  ): RoomState {
+  ): Omit<RoomState, 'stories'> {
     const me = parts.find((p) => p.id === selfId);
     const fac = parts.find((p) => p.id === room.facilitatorId);
     const claimAt =
@@ -751,40 +843,87 @@ export class RoomDurableObject extends DurableObject<AppEnv> {
     };
   }
 
-  private stateFor(selfId: string): RoomState {
-    return this.buildState(
-      this.store.room(),
+  /** Agenda rows for the current agendaVersion, and their serialized block, built once per version (AC16). */
+  private agenda(meta: StoryMeta): { rows: AgendaStory[]; json: string } {
+    const cached = this.agendaCache;
+    if (cached && cached.version === meta.agendaVersion) return cached;
+    const rows: AgendaStory[] = this.store.storiesLight().map(toAgendaStory);
+    let activeDescription = '';
+    if (meta.activeId !== null) {
+      activeDescription = this.store.story(meta.activeId)?.description ?? '';
+    }
+    const built = {
+      version: meta.agendaVersion,
+      rows,
+      json: JSON.stringify({ rows, activeDescription }),
+    };
+    this.agendaCache = built;
+    return built;
+  }
+
+  /** The `stories` part of a snapshot as JSON, once without and once with the agenda block. Identical for every recipient. */
+  private storiesJson(room: RoomRecord): { without: string; withAgenda: string } {
+    const meta = this.store.storyMeta();
+    const { rows, json } = this.agenda(meta);
+    const head = JSON.stringify({
+      agendaVersion: meta.agendaVersion,
+      activeId: meta.activeId,
+      acceptedRound: meta.acceptedRound,
+      progress: computeProgress(rows),
+      sum: sumEstimates(room.settings.deck, rows),
+    });
+    return { without: head, withAgenda: `${head.slice(0, -1)},"agenda":${json}}` };
+  }
+
+  /** A `state` frame with the shared `stories` JSON spliced in, so the agenda is serialized once per version, not per recipient. */
+  private stateFrame(state: Omit<RoomState, 'stories'>, storiesJson: string): string {
+    return `{"type":"state","state":${JSON.stringify(state).slice(0, -1)},"stories":${storiesJson}}}`;
+  }
+
+  private stateFor(selfId: string, withAgenda: boolean): string {
+    const room = this.store.room();
+    const stories = this.storiesJson(room);
+    const state = this.buildState(
+      room,
       this.store.participants(),
       this.store.left(),
       selfId,
       Date.now(),
     );
+    return this.stateFrame(state, withAgenda ? stories.withAgenda : stories.without);
   }
 
-  private broadcast(): void {
+  /**
+   * Sends the new state to every connected participant. The agenda block travels only when this
+   * change bumped agendaVersion (to everyone) or to `agendaFor` (a connection that just joined).
+   */
+  private broadcast(agendaChanged = false, agendaFor?: WebSocket): void {
     try {
-      this.broadcastNow();
+      this.broadcastNow(agendaChanged, agendaFor);
     } catch (err) {
       // The change is committed; clients resync on their next message or reconnect.
       logError('broadcast_failed', err);
     }
   }
 
-  private broadcastNow(): void {
+  private broadcastNow(agendaChanged: boolean, agendaFor?: WebSocket): void {
     const room = this.store.room();
     const parts = this.store.participants();
     const left = this.store.left();
     const ids = new Set(parts.map((p) => p.id));
     const now = Date.now();
+    const stories = this.storiesJson(room);
     const cache = new Map<string, string>();
     for (const ws of this.liveSockets()) {
       const pid = this.attachment(ws).pid;
       if (!pid || !ids.has(pid)) continue;
-      let frame = cache.get(pid);
+      const withAgenda = agendaChanged || ws === agendaFor;
+      const key = `${pid}:${withAgenda ? 1 : 0}`;
+      let frame = cache.get(key);
       if (frame === undefined) {
         const state = this.buildState(room, parts, left, pid, now);
-        frame = serializeMessage({ type: 'state', state });
-        cache.set(pid, frame);
+        frame = this.stateFrame(state, withAgenda ? stories.withAgenda : stories.without);
+        cache.set(key, frame);
       }
       try {
         ws.send(frame);
@@ -795,9 +934,9 @@ export class RoomDurableObject extends DurableObject<AppEnv> {
   }
 
   /** Post-commit: a failing read must not turn a committed command into an error; the client resyncs on the next state. */
-  private sendStateSafe(ws: WebSocket, pid: string): void {
+  private sendStateSafe(ws: WebSocket, pid: string, withAgenda = false): void {
     try {
-      this.sendState(ws, pid);
+      this.sendState(ws, pid, withAgenda);
     } catch (err) {
       logError('send_state_failed', err);
     }
@@ -811,8 +950,12 @@ export class RoomDurableObject extends DurableObject<AppEnv> {
     }
   }
 
-  private sendState(ws: WebSocket, pid: string): void {
-    this.send(ws, { type: 'state', state: this.stateFor(pid) });
+  private sendState(ws: WebSocket, pid: string, withAgenda: boolean): void {
+    try {
+      ws.send(this.stateFor(pid, withAgenda));
+    } catch {
+      /* socket already gone */
+    }
   }
 
   // ---- handshake ----
@@ -872,12 +1015,13 @@ export class RoomDurableObject extends DurableObject<AppEnv> {
         this.closing.delete(pid);
         this.send(ws, { type: 'joined', participantId: pid, ...(token ? { token } : {}) });
       },
+      { agendaFor: ws }, // join / rejoin snapshots carry the agenda (F02-AC16)
     );
     log(msg.type === 'join' ? 'participant_joined' : 'participant_rejoined', {
       roomId: this.safeRoomId(),
       participantId: pid,
     });
-    if (!changed) this.sendStateSafe(ws, pid);
+    if (!changed) this.sendStateSafe(ws, pid, true);
   }
 
   // ---- commands ----
@@ -886,12 +1030,19 @@ export class RoomDurableObject extends DurableObject<AppEnv> {
     const pid = this.attachment(ws).pid;
     if (!pid) throw new CommandError('not_joined', 'send join or rejoin first');
     await this.tick();
-    const { changed, version } = await this.commit((fx) => this.execute(pid, msg, fx));
-    if (!changed) this.sendStateSafe(ws, pid);
-    this.send(ws, { type: 'ack', id: msg.id, version });
+    const { changed, version, result } = await this.commit((fx) => this.execute(pid, msg, fx));
+    if (msg.type === 'resync') this.sendStateSafe(ws, pid, true);
+    else if (!changed && msg.type !== 'get_story') this.sendStateSafe(ws, pid);
+    if (result?.reply) this.send(ws, result.reply);
+    this.send(ws, {
+      type: 'ack',
+      id: msg.id,
+      version,
+      ...(result?.storyIds ? { storyIds: result.storyIds } : {}),
+    });
   }
 
-  private execute(pid: string, msg: CommandMessage, fx: Fx): void {
+  private execute(pid: string, msg: CommandMessage, fx: Fx): CommandResult | undefined {
     const s = this.store;
     const now = Date.now();
     const me = s.participant(pid);
@@ -906,6 +1057,7 @@ export class RoomDurableObject extends DurableObject<AppEnv> {
     switch (msg.type) {
       case 'vote': {
         need(isVoter(me, fid, room.settings));
+        this.requireNotIdle(room);
         if (room.phase === 'revealed')
           throw new CommandError('round_revealed', 'round already revealed');
         const card = msg.card === null ? null : msg.card.normalize('NFC');
@@ -917,17 +1069,21 @@ export class RoomDurableObject extends DurableObject<AppEnv> {
       }
       case 'reveal': {
         need(canRevealOrReset(actor, fid, room.settings.controlMode));
+        this.requireNotIdle(room);
         if (room.phase === 'voting') s.setRound('revealed', room.roundNumber);
         return;
       }
       case 'reset': {
         need(canRevealOrReset(actor, fid, room.settings.controlMode));
+        if (msg.topic !== undefined) this.requireSource(room, 'topic');
+        this.requireNotIdle(room);
         this.resetRound(now);
         if (msg.topic !== undefined) s.setTopic(msg.topic);
         return;
       }
       case 'set_topic': {
         need(canManageRoom(actor, fid));
+        this.requireSource(room, 'topic');
         s.setTopic(msg.topic);
         return;
       }
@@ -936,16 +1092,25 @@ export class RoomDurableObject extends DurableObject<AppEnv> {
         const next = applySettings(room.settings, msg.settings);
         const deckChanged =
           msg.settings.deck !== undefined && !decksEqual(room.settings.deck, msg.settings.deck);
+        const sourceChanged = next.storySource !== room.settings.storySource;
         let reset = false;
         if (deckChanged) {
+          // F02-AC21: the F01-AC28 rule is unchanged, even after an accept.
           const hasVotes = s.participants().some((p) => p.vote !== null) || s.left().length > 0;
           if (hasVotes) {
-            if (!msg.confirmReset)
-              throw new CommandError('confirmation_required', 'changing the deck discards votes');
+            if (!msg.confirmReset) throw confirmReset('changing the deck discards votes');
             reset = true;
           }
         }
+        if (sourceChanged) {
+          // F02-AC1: the round is reset and the active story cleared; an unsaved round needs confirmation.
+          if (this.roundUnsaved(room) && !msg.confirmReset) {
+            throw confirmReset('switching the story source discards the round');
+          }
+          reset = true;
+        }
         s.setSettings(next);
+        if (sourceChanged) s.setActive(null, null);
         if (reset) this.resetRound(now);
         if (!next.facilitatorVotes && room.phase === 'voting') {
           const fac = s.participant(fid);
@@ -985,6 +1150,7 @@ export class RoomDurableObject extends DurableObject<AppEnv> {
         }
         s.addTombstone(target.token_hash, now);
         s.deleteParticipant(target.id);
+        s.anonymizeFinalRounds(target.id); // F02-AC11
         fx.push(() => {
           for (const ws of this.ctx.getWebSockets()) {
             if (this.attachment(ws).pid !== target.id) continue;
@@ -1028,7 +1194,338 @@ export class RoomDurableObject extends DurableObject<AppEnv> {
         log('facilitator_claimed', { roomId: this.store.room().roomId, participantId: me.id });
         return;
       }
+      // ---- stories (F02) ----
+      case 'get_story': {
+        need(canViewStory(actor));
+        const story = this.requireStory(msg.storyId);
+        return { reply: { type: 'story', id: msg.id, story: toDetail(story) } };
+      }
+      case 'resync':
+        return;
+      case 'add_story': {
+        need(canManageStories(actor, fid));
+        if (s.storyCount() >= MAX_STORIES) throw limitReached();
+        const id = newStoryId();
+        s.appendStory({
+          id,
+          title: msg.title,
+          description: msg.description ?? '',
+          link: msg.link ?? null,
+          status: 'pending',
+          estimate: null,
+          rev: 1,
+          tracker: null,
+          final_round: null,
+        });
+        return { storyIds: [id] };
+      }
+      case 'add_stories': {
+        need(canManageStories(actor, fid));
+        const titles = parseBulkLines(msg.text).titles; // validated by the message schema
+        if (s.storyCount() + titles.length > MAX_STORIES) throw limitReached();
+        const storyIds = titles.map(() => newStoryId());
+        titles.forEach((title, i) =>
+          s.appendStory({
+            id: storyIds[i]!,
+            title,
+            description: '',
+            link: null,
+            status: 'pending',
+            estimate: null,
+            rev: 1,
+            tracker: null,
+            final_round: null,
+          }),
+        );
+        return { storyIds };
+      }
+      case 'edit_story': {
+        need(canManageStories(actor, fid));
+        const story = this.requireStory(msg.storyId);
+        if (msg.title === undefined && msg.description === undefined && msg.link === undefined) {
+          throw new CommandError('invalid_input', 'nothing to change');
+        }
+        const title = msg.title ?? story.title;
+        const description = msg.description ?? story.description;
+        const link = msg.link === undefined ? story.link : msg.link;
+        if (title === story.title && description === story.description && link === story.link) {
+          return; // nothing changed: no-op
+        }
+        s.updateStory(story.id, { title, description, link, rev: story.rev + 1 });
+        return;
+      }
+      case 'delete_story': {
+        need(canManageStories(actor, fid));
+        const story = this.requireStory(msg.storyId);
+        const meta = s.storyMeta();
+        const isActive = meta.activeId === story.id;
+        if (isActive && this.roundUnsaved(room) && !msg.confirmReset) {
+          throw confirmReset('deleting the active story discards its round');
+        }
+        if (story.status === 'estimated' && !msg.confirmDelete) {
+          throw new CommandError(
+            'confirmation_required',
+            'deleting an estimated story needs confirmation',
+            'confirmDelete',
+          );
+        }
+        s.deleteStory(story.id);
+        if (isActive) {
+          s.setActive(null, null);
+          this.resetRound(now); // the room is idle with a fresh round
+        }
+        return;
+      }
+      case 'move_story': {
+        need(canManageStories(actor, fid));
+        this.requireStory(msg.storyId);
+        if (msg.beforeId !== null && !s.story(msg.beforeId)) {
+          throw new CommandError('unknown_story', 'no such story', 'beforeId');
+        }
+        const rows = s.storiesLight();
+        if (moveStory(rows, msg.storyId, msg.beforeId) === rows) return; // already there
+        s.moveStory(msg.storyId, msg.beforeId);
+        return;
+      }
+      case 'select_story': {
+        need(canSelectStory(actor, fid));
+        this.requireSource(room, 'stories');
+        const story = this.requireStory(msg.storyId);
+        const meta = s.storyMeta();
+        if (meta.activeId === story.id) return; // use reset to re-vote
+        this.activate(room, story.id, msg.confirmReset, now);
+        return;
+      }
+      case 'next_story': {
+        need(canSelectStory(actor, fid));
+        this.requireSource(room, 'stories');
+        this.requireCurrentRound(room, msg.round);
+        const next = nextStoryId(s.storiesLight(), s.storyMeta().activeId);
+        if (next === null) throw new CommandError('no_next_story', 'no pending story left');
+        this.activate(room, next, msg.confirmReset, now);
+        return;
+      }
+      case 'accept_estimate': {
+        need(canAcceptEstimate(actor, fid));
+        this.requireSource(room, 'stories');
+        const story = this.requireStory(msg.storyId);
+        const meta = s.storyMeta();
+        if (meta.activeId === null) throw new CommandError('no_active_story', 'no active story');
+        this.requireCurrentRound(room, msg.round);
+        if (meta.activeId !== story.id) {
+          throw new CommandError('invalid_story_state', 'the story is not the active story');
+        }
+        if (room.phase !== 'revealed') {
+          throw new CommandError('round_not_revealed', 'reveal the round first');
+        }
+        const estimate = msg.estimate.normalize('NFC');
+        if (!isEstimateCard(room.settings.deck, estimate)) {
+          throw new CommandError('invalid_card', 'not a value card of the deck', 'estimate');
+        }
+        const finalRound: FinalRound = {
+          number: room.roundNumber,
+          votes: [
+            ...s
+              .participants()
+              .filter((p) => p.vote !== null)
+              .map((p) => ({
+                participantId: p.id,
+                name: p.display_name as string | null,
+                card: p.vote!,
+              })),
+            // Participants removed after voting: the vote stays, the name is gone (F02-AC11).
+            ...s.left().map((l) => ({ participantId: l.participant_id, name: null, card: l.card })),
+          ],
+        };
+        s.updateStory(story.id, {
+          status: 'estimated',
+          estimate,
+          final_round: JSON.stringify(finalRound),
+        });
+        s.setActive(story.id, room.roundNumber);
+        return;
+      }
+      case 'skip_story': {
+        need(canSelectStory(actor, fid));
+        this.requireSource(room, 'stories');
+        const story = this.requireStory(msg.storyId);
+        this.requireCurrentRound(room, msg.round);
+        if (story.status !== 'pending') {
+          throw new CommandError('invalid_story_state', 'only a pending story can be skipped');
+        }
+        const meta = s.storyMeta();
+        const isActive = meta.activeId === story.id;
+        if (isActive && this.roundUnsaved(room) && !msg.confirmReset) {
+          throw confirmReset('skipping the active story discards its round');
+        }
+        s.updateStory(story.id, { status: 'skipped' });
+        if (isActive) {
+          const next = msg.advance
+            ? nextStoryId(
+                s.storiesLight(), // already contains the skipped status
+                story.id,
+              )
+            : null;
+          s.setActive(next, null);
+          this.resetRound(now);
+        }
+        return;
+      }
+      case 'restore_story': {
+        need(canManageStories(actor, fid));
+        const story = this.requireStory(msg.storyId);
+        if (story.status !== 'skipped') {
+          throw new CommandError('invalid_story_state', 'only a skipped story can be restored');
+        }
+        s.updateStory(story.id, { status: 'pending' });
+        return;
+      }
+      default: {
+        // Exhaustiveness: a message type added to the contract without a handler fails loudly.
+        const unhandled: never = msg;
+        void unhandled;
+        throw new CommandError('invalid_input', 'unsupported command');
+      }
     }
+  }
+
+  // ---- story helpers (F02) ----
+
+  private requireStory(id: string): StoryRow {
+    const story = this.store.story(id);
+    if (!story) throw new CommandError('unknown_story', 'no such story', 'storyId');
+    return story;
+  }
+
+  private requireSource(room: RoomRecord, source: 'topic' | 'stories'): void {
+    if (room.settings.storySource !== source) {
+      throw new CommandError(
+        'wrong_story_source',
+        source === 'stories' ? 'needs story list mode' : 'not available in story list mode',
+      );
+    }
+  }
+
+  /** Story list mode without an active story has no round to vote on. */
+  private requireNotIdle(room: RoomRecord): void {
+    if (this.isIdle(room)) throw new CommandError('no_active_story', 'no story is selected');
+  }
+
+  private requireCurrentRound(room: RoomRecord, round: number): void {
+    if (round !== room.roundNumber) {
+      throw new CommandError('stale_round', 'the round has changed', 'round');
+    }
+  }
+
+  /**
+   * Unsaved round (F02 Definitions): at least one vote, and either in voting, or revealed with no
+   * estimate accepted in this round. Idle story rooms have nothing to lose.
+   */
+  private roundUnsaved(room: RoomRecord): boolean {
+    if (room.settings.storySource === 'stories') {
+      const meta = this.store.storyMeta();
+      if (meta.activeId === null || meta.acceptedRound === room.roundNumber) return false;
+    }
+    return this.store.participants().some((p) => p.vote !== null) || this.store.left().length > 0;
+  }
+
+  /** Make a story active and start a new round, atomically, after the unsaved-round check. */
+  private activate(room: RoomRecord, storyId: string, confirmed: boolean, now: number): void {
+    if (this.roundUnsaved(room) && !confirmed) {
+      throw confirmReset('this discards the current round');
+    }
+    this.store.setActive(storyId, null);
+    this.resetRound(now);
+  }
+
+  // ---- test-mode hooks (F02) ----
+
+  testSeedStories(
+    req: TestSeedStoriesRequest,
+  ): Promise<
+    TestSeedStoriesResponse | { error: 'room_not_found' | 'story_limit_reached' | 'invalid_input' }
+  > {
+    return this.enqueue(() => this.testSeedStoriesNow(req));
+  }
+
+  private async testSeedStoriesNow(
+    req: TestSeedStoriesRequest,
+  ): Promise<
+    TestSeedStoriesResponse | { error: 'room_not_found' | 'story_limit_reached' | 'invalid_input' }
+  > {
+    this.requireTestMode();
+    if (!this.store.exists()) return { error: 'room_not_found' };
+    const estimated = req.estimated ?? 0;
+    const skipped = req.skipped ?? 0;
+    if (estimated + skipped > req.count) return { error: 'invalid_input' };
+    await this.tick();
+    try {
+      const { result, version } = await this.commit(() => {
+        const s = this.store;
+        const existing = s.storyCount();
+        if (existing + req.count > MAX_STORIES) throw limitReached();
+        const room = s.room();
+        const cards = valueCards(room.settings.deck);
+        const filler = req.emoji ? '😀' : 'x';
+        const fill = (prefix: string, length: number | undefined): string => {
+          if (length === undefined) return prefix;
+          const have = graphemeLength(prefix);
+          return have >= length ? prefix : prefix + filler.repeat(length - have);
+        };
+        const ids: string[] = [];
+        for (let k = 0; k < req.count; k++) {
+          const id = newStoryId();
+          ids.push(id);
+          const n = existing + k + 1;
+          const status =
+            k < estimated ? 'estimated' : k < estimated + skipped ? 'skipped' : 'pending';
+          const estimate = status === 'estimated' ? cards[k % cards.length]! : null;
+          const voters = Array.from({ length: req.finalRoundVotes ?? 3 }, (_, i) => ({
+            participantId: `seed-voter-${i + 1}`,
+            name: `Seed voter ${i + 1}`,
+            card: cards[(k + i) % cards.length]!,
+          }));
+          s.appendStory({
+            id,
+            title: fill(`Story ${String(n).padStart(3, '0')} `, req.titleLength).trimEnd(),
+            description: req.descriptionLength ? filler.repeat(req.descriptionLength) : '',
+            link: req.linkLength
+              ? `https://a.bc/${'a'.repeat(Math.max(0, req.linkLength - 13))}`
+              : null,
+            status,
+            estimate,
+            rev: 1,
+            tracker: null,
+            final_round:
+              status === 'estimated'
+                ? JSON.stringify({
+                    number: Math.max(1, room.roundNumber - 1),
+                    votes: voters,
+                  } satisfies FinalRound)
+                : null,
+          });
+        }
+        return ids;
+      });
+      return { storyIds: result, version };
+    } catch (err) {
+      if (err instanceof CommandError) return { error: 'story_limit_reached' };
+      throw err;
+    }
+  }
+
+  testStorage(): TestStorageResponse | null {
+    this.requireTestMode();
+    if (!this.store.exists()) return null;
+    const entries = this.store.storageReport();
+    return {
+      entries,
+      totalBytes: entries.reduce((n, e) => n + e.bytes, 0),
+      finalRounds: this.store
+        .stories()
+        .filter((r) => r.final_round !== null)
+        .map((r) => ({ storyId: r.id, finalRound: JSON.parse(r.final_round!) as FinalRound })),
+    };
   }
 
   /** New round: clears all votes, back to voting, purges offline participants whose time has passed (F01-AC19, AC21). */
