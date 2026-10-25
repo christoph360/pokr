@@ -127,7 +127,7 @@ test.describe('F02 size and loading in the browser (AC16)', () => {
       await raw.command('resync');
       expectOk(await selectStory(raw, rowsOf(raw)[150]!.id, true));
       const started = Date.now();
-      const late = await world.join(room, { name: 'Late', clientConfig: { pingIntervalMs: 2000 } });
+      const late = await world.join(room, { name: 'Late', clientConfig: { pingIntervalMs: 4000 } });
       await sp(late).openAgenda();
       await expect(sp(late).rows).toHaveCount(MAX_STORIES);
       // Indicative on a local machine: interactive within a few seconds.
@@ -224,7 +224,7 @@ test.describe('F02 hidden votes in the browser (F01-AC11 in story mode)', () => 
       const late = await world.join(room, {
         name: 'Late',
         role: 'observer',
-        clientConfig: { pingIntervalMs: 2000 },
+        clientConfig: { pingIntervalMs: 4000 },
       });
       await sp(late).openAgenda();
       await expect(sp(late).activeTitle).toHaveText('A');

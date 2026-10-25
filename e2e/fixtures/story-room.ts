@@ -92,7 +92,7 @@ export async function makeStoryRoom(
     // The F01 test heartbeat (250 ms, connection declared dead after 375 ms) makes the client
     // reconnect when a loaded machine stalls for a moment, which swallowed UI actions. Story
     // tests act on the UI and do not depend on fast dead-connection detection.
-    clientConfig: opts.clientConfig ?? { pingIntervalMs: 2000 },
+    clientConfig: opts.clientConfig ?? { pingIntervalMs: 4000 },
   });
   for (const p of sc.all) await sp(p).openAgenda();
   const raw = await world.rawFacilitator(sc.room);

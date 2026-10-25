@@ -98,10 +98,17 @@ async function closeBounded(browser: Browser): Promise<void> {
  * old fixed 250 ms (dead after 375 ms) made the page reconnect whenever a loaded CI runner stalled
  * for a moment, and the next UI action then failed with "not connected" (seen on webkit and
  * chromium in CI on 16d000a). Ping as slowly as the room's server-side heartbeat allows: a third
- * of the server timeout, at most 1 s.
+ * of the server timeout, at most 1 s, and when the test sets none, `PAGE_PING_MS`.
  */
+// Run 39033477508 (webkit, PR #1): the runner stalled for several seconds (the server answered a
+// ping 450 ms late, then nothing for over 5 s; other tests in that window took 10 to 27 s instead
+// of 3 to 5 s). With a 1 s ping the page declared the connection dead after 1.5 s, reconnected,
+// and the `update_settings` it had just sent was lost, failing AC1. Tests that do not exercise
+// dead-connection detection use a page ping of 4 s (dead after 6 s).
+const PAGE_PING_MS = 4_000;
+
 function pingFor(heartbeatTimeoutMs?: number): Partial<PokrTestConfig> {
-  if (heartbeatTimeoutMs === undefined) return { pingIntervalMs: 1000 };
+  if (heartbeatTimeoutMs === undefined) return { pingIntervalMs: PAGE_PING_MS };
   return { pingIntervalMs: Math.min(1000, Math.max(100, Math.floor(heartbeatTimeoutMs / 3))) };
 }
 

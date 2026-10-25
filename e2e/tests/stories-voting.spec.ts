@@ -128,7 +128,7 @@ test.describe('F02 selecting a story (AC7, AC8 basics)', () => {
       });
       expectOk(await selectStory(raw, ids['Story A']!));
       await expect(sp(fac).activeTitle).toHaveText('Story A');
-      const late = await world.join(room, { name: 'Late', clientConfig: { pingIntervalMs: 2000 } });
+      const late = await world.join(room, { name: 'Late', clientConfig: { pingIntervalMs: 4000 } });
       await sp(late).openAgenda();
       await expect(sp(late).activeTitle).toHaveText('Story A');
       await sp(late).expectTitles(['Story A', 'Story B']);

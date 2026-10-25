@@ -69,7 +69,7 @@ test.describe('F02 quick picks (AC10)', () => {
       const fac = await world.join(sr.room, {
         name: 'Fiona',
         asFacilitator: true,
-        clientConfig: { pingIntervalMs: 2000 },
+        clientConfig: { pingIntervalMs: 4000 },
       });
       await sp(fac).select('Story');
       await expect(sp(fac).activeTitle).toHaveText('Story');
@@ -172,7 +172,7 @@ test.describe('F02 accepting an estimate in the UI (AC10, AC11)', () => {
       const late = await world.join(room, {
         name: 'Late',
         role: 'observer',
-        clientConfig: { pingIntervalMs: 2000 },
+        clientConfig: { pingIntervalMs: 4000 },
       });
       await sp(late).openAgenda();
       await sp(late).expectRow('Story A', { status: 'estimated', estimate: '8' });
