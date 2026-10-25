@@ -2,13 +2,13 @@
 
 - Spec: `docs/specs/02-story-list.md` rev 2. Plan: `docs/qa/F02-test-plan.md` (v2, section 9).
 - Author: qa-engineer. Date: 2026-10-15.
-- Build under test: `7c3fb66` (feature/F02-story-list), code freeze on `apps/` and `packages/`.
+- Build under test: `68c144e` (feature/F02-story-list, final, includes fix 16d000a and the harness fixes); merged to `main` as `d8a53a5`. Earlier runs were on `7c3fb66` and `16d000a`. Code freeze on `apps/` and `packages/` held during verification.
 - Environment: macOS, local `wrangler dev --var POKR_TEST_MODE:1` (:8787) and `ng serve` (:4200), Playwright 1.61.1, `retries: 0`.
 - Projects run locally: chromium, webkit, mobile-chrome (Pixel 7), under `CI=1` (2 workers). **Firefox cannot launch on this machine**; its coverage comes from CI.
 
-## Verdict: SIGN-OFF, pending one green CI run on the pushed fixes
+## Verdict: SIGN-OFF (final)
 
-No open product defects. D1 was found, fixed (16d000a) and verified. Local verification, `CI=1` (2 workers), chromium + webkit + mobile-chrome, build 16d000a plus the test fixes below: **four consecutive full runs, each 620 passed, 2 skipped by design, 0 failed** (fin1 to fin4; fin4 includes the final harness edits). Firefox cannot launch on this machine; it is covered by CI only. The CI run on 16d000a had 6 failures in chromium, webkit and firefox. All six are test-harness problems (triage below), now fixed. The third "green run" required by the definition is the CI run on the commit that contains these fixes; sign-off is conditional on it.
+No open product defects. D1 was found, fixed (16d000a) and verified. Local verification, `CI=1` (2 workers), chromium + webkit + mobile-chrome, build 16d000a plus the test fixes below: **four consecutive full runs, each 620 passed, 2 skipped by design, 0 failed** (fin1 to fin4; fin4 includes the final harness edits). Firefox cannot launch on this machine; it is covered by CI only. The CI run on 16d000a had 6 failures in chromium, webkit and firefox. All six are test-harness problems (triage below), now fixed. The required CI run is green: on `68c144e` the push run 40202448963 and the PR run 40202454440 passed on all four projects (chromium, firefox, webkit, mobile-chrome), and CI on `main` after the merge (`d8a53a5`, run 40203262659) was green too. `68c144e` contains both PR-time harness fixes (`e679eab` WebKit browser pool, `68c144e` runner stalls; see the addenda). PR #1 was merged to `main` as `d8a53a5`.
 
 | ID | Severity | Owner | Summary | Status |
 | --- | --- | --- | --- | --- |
@@ -111,7 +111,8 @@ Counts are distinct tests carrying the ID on chromium. `-g "F02-AC4"` selects th
 - VoiceOver pass over the active-story announcement and reorder.
 - Edge, real iOS, forced colors, 400% zoom.
 - Staging: EU jurisdiction of story storage (the F01-AC31 helper check covers the same helper), p95 latency of select and accept.
-- **Firefox:** only in CI.
+- **Firefox:** only in CI (green on `68c144e`).
+- **Ubuntu 26 runner image:** the final CI runs were still on `ubuntu-24.04` (20261021.618). `ubuntu-latest` now resolves to Ubuntu 26, which no QA run has used; the first CI run on it is the first evidence.
 
 ## Gaps and notes
 
