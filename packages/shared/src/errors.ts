@@ -21,6 +21,15 @@ export const ERROR_CODES = [
   'already_joined', // join/rejoin on a connection that is already joined
   'unknown_target', // target participant ID is not in the room
   'claim_not_available', // facilitator claim before canClaimAt, or the facilitator is online
+  // F02 (additions)
+  'story_limit_reached', // more than MAX_STORIES would result (F02-AC5)
+  'unknown_story', // storyId (or reorder anchor) is not in the room: deleted meanwhile
+  'no_active_story', // vote/reveal/accept in story-list mode with no active story
+  'no_next_story', // next_story with nothing left to estimate (F02-AC9)
+  'invalid_story_state', // e.g. accept before reveal, accept for a story that is not active, skip an estimated story
+  'wrong_story_source', // story-round command in topic mode, or set_topic / reset with topic in story-list mode
+  'stale_round', // accept_estimate / next_story / skip_story refer to a round that is no longer the current one
+  'round_not_revealed', // accept_estimate while the round is still in voting
   'internal_error',
 ] as const;
 export type ErrorCode = (typeof ERROR_CODES)[number];
@@ -55,5 +64,13 @@ export const ERROR_HTTP_STATUS: Record<ErrorCode, number> = {
   already_joined: 409,
   unknown_target: 404,
   claim_not_available: 409,
+  story_limit_reached: 409,
+  unknown_story: 404,
+  no_active_story: 409,
+  no_next_story: 409,
+  invalid_story_state: 409,
+  wrong_story_source: 409,
+  stale_round: 409,
+  round_not_revealed: 409,
   internal_error: 500,
 };

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  EMPTY_STORIES_STATE,
   ERROR_CODES,
   ERROR_HTTP_STATUS,
   MAX_MESSAGE_CHARS,
@@ -33,12 +34,14 @@ const state = (over: Partial<RoomState> = {}): RoomState => ({
     controlMode: 'facilitator',
     autoReveal: false,
     facilitatorVotes: true,
+    storySource: 'topic',
   },
   topic: '',
   round: { phase: 'voting', number: 1 },
   participants: [{ id: 'p1', name: 'Ann', role: 'voter', online: true, hasVoted: true }],
   myVote: '5',
   canClaimAt: null,
+  stories: EMPTY_STORIES_STATE,
   ...over,
 });
 

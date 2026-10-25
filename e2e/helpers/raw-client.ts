@@ -1,5 +1,5 @@
-import { PING_FRAME, parseServerMessage } from '@pokr/shared';
-import type { ErrorCode, RoomState, ServerMessage } from '@pokr/shared';
+import { PING_FRAME, mergeAgenda, parseServerMessage } from '@pokr/shared';
+import type { ErrorCode, HeldAgenda, RoomState, ServerMessage, StoryDetail } from '@pokr/shared';
 import { randomBytes } from 'node:crypto';
 import { request as httpRequest } from 'node:http';
 import { API_URL, CLIENT_KEY_HEADER, WS_URL } from './env';
@@ -12,7 +12,7 @@ export interface RawFrame {
 }
 
 export type CommandResult =
-  | { ok: true; version: number }
+  | { ok: true; version: number; storyIds?: string[] }
   | { ok: false; code: ErrorCode; fatal: boolean; field?: string; retryAfterMs?: number };
 
 type ErrorMsg = Extract<ServerMessage, { type: 'error' }>;
@@ -21,14 +21,29 @@ type ErrorMsg = Extract<ServerMessage, { type: 'error' }>;
 export class RawClient {
   readonly frames: RawFrame[] = [];
   state: RoomState | null = null;
+  /** The agenda as a real client holds it (F02: `mergeAgenda` over every accepted state). */
+  held: HeldAgenda | null = null;
+  /** Set when `mergeAgenda` asked for a resync (a protocol gap; should never happen). */
+  agendaGaps = 0;
+  /** `story` replies of `get_story`, by command id. */
+  readonly storyReplies = new Map<string, StoryDetail>();
   participantId: string | null = null;
   token: string | null = null;
   closed: { code: number; reason: string } | null = null;
   private nextId = 1;
+  /** Id of the most recent `command()` (to look up a `story` reply). */
+  lastCommandId = '';
   private pingTimer: ReturnType<typeof setInterval> | null = null;
   /** Heartbeat like the real client (`pingIntervalMs` of the test config). Off = a silent client. */
   pingIntervalMs = 250;
   autoPing = true;
+  /**
+   * Pace commands under the server's message limit (20 per 10 s per connection, F01-AC37) so that
+   * long scripted scenarios do not trip it. Off by default: the rate-limit tests need the burst.
+   * This is pacing against a documented limit, not a wait for application state.
+   */
+  paced = false;
+  private sentAt: number[] = [];
   private waiters: (() => void)[] = [];
 
   private constructor(readonly ws: WebSocket) {
@@ -42,8 +57,15 @@ export class RawClient {
         frame.msg = parsed.message;
         if (parsed.message.type === 'state') {
           const prev = this.state;
-          if (!prev || parsed.message.state.version >= prev.version)
+          if (!prev || parsed.message.state.version >= prev.version) {
             this.state = parsed.message.state;
+            const merged = mergeAgenda(this.held, parsed.message.state.stories);
+            this.held = merged.held;
+            if (merged.resync) this.agendaGaps += 1;
+          }
+        }
+        if (parsed.message.type === 'story') {
+          this.storyReplies.set(parsed.message.id, parsed.message.story);
         }
         if (parsed.message.type === 'joined') {
           this.participantId = parsed.message.participantId;
@@ -122,6 +144,7 @@ export class RawClient {
   }
 
   sendRaw(text: string): void {
+    this.sentAt.push(Date.now());
     this.frames.push({ dir: 'out', text, at: Date.now() });
     this.ws.send(text);
   }
@@ -172,14 +195,22 @@ export class RawClient {
 
   /** Send a command and wait for its ack or error. */
   async command(type: string, fields: Record<string, unknown> = {}): Promise<CommandResult> {
+    if (this.paced) await this.pace();
     const id = `c${this.nextId++}`;
+    this.lastCommandId = id;
     const start = this.frames.length;
     this.send({ type, id, ...fields });
     let result: CommandResult | null = null;
     await this.waitUntil(() => {
       for (let i = start; i < this.frames.length; i++) {
         const m = this.frames[i]?.msg;
-        if (m?.type === 'ack' && m.id === id) result = { ok: true, version: m.version };
+        if (m?.type === 'ack' && m.id === id) {
+          result = {
+            ok: true,
+            version: m.version,
+            ...(m.storyIds !== undefined ? { storyIds: m.storyIds } : {}),
+          };
+        }
         if (m?.type === 'error' && m.id === id) {
           result = {
             ok: false,
@@ -193,6 +224,17 @@ export class RawClient {
       return result !== null;
     }, `reply to ${type}`);
     return result!;
+  }
+
+  private async pace(): Promise<void> {
+    const WINDOW = 10_000;
+    const BUDGET = 17;
+    for (;;) {
+      const now = Date.now();
+      this.sentAt = this.sentAt.filter((t) => now - t < WINDOW);
+      if (this.sentAt.length < BUDGET) return;
+      await new Promise<void>((r) => setTimeout(r, this.sentAt[0]! + WINDOW - now + 25));
+    }
   }
 
   vote(card: string | null): Promise<CommandResult> {

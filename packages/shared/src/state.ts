@@ -1,5 +1,6 @@
 import * as v from 'valibot';
 import { RoleSchema, RoomSettingsSchema } from './settings';
+import { StoriesStateSchema } from './stories';
 
 /**
  * Room state snapshot, projected for one recipient.
@@ -55,5 +56,7 @@ export const RoomStateSchema = v.object({
   myVote: v.nullable(v.string()),
   /** Epoch ms (server clock) when claiming the facilitator role becomes available; null while the facilitator is online (F01-AC25). */
   canClaimAt: v.nullable(v.number()),
+  /** F02. Present in every snapshot; an empty agenda in rooms that never used stories. */
+  stories: StoriesStateSchema,
 });
 export type RoomState = v.InferOutput<typeof RoomStateSchema>;

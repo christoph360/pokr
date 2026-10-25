@@ -35,6 +35,9 @@ export default defineConfig({
   forbidOnly: isCI,
   retries: 0, // flaky tests are defects, never retried until green
   workers: isCI ? 2 : 4,
+  // Waits on visible state, not sleeps. The 2-core CI runner stalls for seconds at a time (see
+  // fixtures/index.ts, PAGE_PING_MS), so state assertions get twice the local budget there.
+  expect: { timeout: isCI ? 10_000 : 5_000 },
   reporter: isCI
     ? // `list` prints every failure with its error in the job log; `github` alone only annotates.
       [['list'], ['html', { open: 'never' }], ['github']]

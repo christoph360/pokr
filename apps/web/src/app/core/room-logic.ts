@@ -9,6 +9,7 @@ import {
   TOPIC_MAX,
   canClaimFacilitator,
   canManageRoom,
+  canManageStories,
   canRevealOrReset,
   isVoter,
   votedCounter,
@@ -88,6 +89,8 @@ export interface Controls {
   canRevealOrReset: boolean;
   /** Topic, settings, remove, hand over. */
   canManage: boolean;
+  /** Add, edit, delete, reorder, select, skip, Next, accept (F02-AC6): facilitator only. */
+  canManageStories: boolean;
   /** Has cards (voter, and not a facilitator with "facilitator votes" off). */
   canVote: boolean;
   /** The claim button is available now (F01-AC25). */
@@ -103,6 +106,7 @@ export function controlsFor(state: RoomState, serverNow: number): Controls {
       isFacilitator: false,
       canRevealOrReset: false,
       canManage: false,
+      canManageStories: false,
       canVote: false,
       canClaim: false,
     };
@@ -113,6 +117,7 @@ export function controlsFor(state: RoomState, serverNow: number): Controls {
     isFacilitator: self.id === state.facilitatorId,
     canRevealOrReset: canRevealOrReset(actor, state.facilitatorId, state.settings.controlMode),
     canManage: canManageRoom(actor, state.facilitatorId),
+    canManageStories: canManageStories(actor, state.facilitatorId),
     canVote: isVoter(self, state.facilitatorId, state.settings),
     canClaim: canClaimFacilitator(actor, state.facilitatorId, state.canClaimAt, serverNow),
   };

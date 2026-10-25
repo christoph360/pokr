@@ -1,7 +1,7 @@
 import { TestBed } from '@angular/core/testing';
 import { PING_FRAME, backoffDelayMs } from '@pokr/shared';
 import type { RoomState, ServerMessage } from '@pokr/shared';
-import { makeState } from '../testing/fixtures';
+import { makeState, makeStories, story } from '../testing/fixtures';
 import { RoomApi } from './room-api';
 import type { RoomInfoResult } from './room-api';
 import { CommandError, RoomConnection } from './room-connection';
@@ -257,5 +257,74 @@ describe('RoomConnection', () => {
     expect(conn.status()).toBe('reconnecting');
     vi.advanceTimersByTime(100);
     expect(sockets.length).toBeGreaterThan(n);
+  });
+
+  describe('agenda (F02-AC16)', () => {
+    const rows = [story('a'), story('b')];
+    const withAgenda = (version: number, agendaVersion: number, withoutAgenda = false) =>
+      ({
+        type: 'state',
+        state: makeState({
+          version,
+          stories: makeStories(rows, { agendaVersion, withoutAgenda }),
+        }),
+      }) as const;
+
+    it('F02-AC16 holds the agenda from a snapshot and keeps it when later broadcasts omit it', () => {
+      connected();
+      last().receive(withAgenda(2, 3));
+      expect(conn.agenda()?.rows.map((r) => r.id)).toEqual(['a', 'b']);
+      expect(conn.agenda()?.version).toBe(3);
+      last().receive(withAgenda(3, 3, true));
+      expect(conn.agenda()?.rows).toHaveLength(2);
+      expect(last().frames.filter((f) => f['type'] === 'resync')).toHaveLength(0);
+    });
+
+    it('F02-AC16 an agenda-less state with a different agendaVersion sends resync', () => {
+      connected();
+      last().receive(withAgenda(2, 3));
+      last().receive(withAgenda(3, 4, true));
+      expect(last().frames.filter((f) => f['type'] === 'resync')).toHaveLength(1);
+      expect(conn.agenda()?.version).toBe(3);
+    });
+
+    it('F02-AC16 an older state is ignored and does not touch the held agenda', () => {
+      connected();
+      last().receive(withAgenda(5, 3));
+      last().receive({
+        type: 'state',
+        state: makeState({ version: 4, stories: makeStories([story('z')], { agendaVersion: 9 }) }),
+      });
+      expect(conn.agenda()?.rows.map((r) => r.id)).toEqual(['a', 'b']);
+    });
+
+    it('F02-AC16 after a reconnect the held agenda is dropped and the first state replaces it', () => {
+      connected();
+      last().receive(withAgenda(2, 3));
+      last().drop();
+      vi.advanceTimersByTime(100);
+      last().open();
+      last().receive({ type: 'joined', participantId: 'p1' });
+      // Same agendaVersion but without agenda: not trusted after a reconnect.
+      last().receive(withAgenda(3, 3, true));
+      expect(last().frames.filter((f) => f['type'] === 'resync')).toHaveLength(1);
+      last().receive({
+        type: 'state',
+        state: makeState({ version: 4, stories: makeStories([story('n')], { agendaVersion: 5 }) }),
+      });
+      expect(conn.agenda()?.rows.map((r) => r.id)).toEqual(['n']);
+    });
+
+    it('F02-AC11 getStory resolves with the story reply, fetched fresh each time', async () => {
+      connected();
+      const detail = { ...story('a'), description: 'D', finalRound: null };
+      const first = conn.getStory('a');
+      const frame = last().frames.find((f) => f['type'] === 'get_story')!;
+      last().receive({ type: 'story', id: frame['id'] as string, story: detail });
+      last().receive({ type: 'ack', id: frame['id'] as string, version: 1 });
+      expect((await first).description).toBe('D');
+      conn.getStory('a').catch(() => undefined);
+      expect(last().frames.filter((f) => f['type'] === 'get_story')).toHaveLength(2);
+    });
   });
 });

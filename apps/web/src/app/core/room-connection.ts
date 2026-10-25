@@ -5,6 +5,7 @@ import {
   WS_CLOSE_CODES,
   backoffDelayMs,
   isTerminalError,
+  mergeAgenda,
   parseServerMessage,
   serializeMessage,
 } from '@pokr/shared';
@@ -12,9 +13,11 @@ import type {
   ClientMessage,
   CommandMessage,
   ErrorCode,
+  HeldAgenda,
   Role,
   RoomState,
   ServerMessage,
+  StoryDetail,
 } from '@pokr/shared';
 import { RoomApi } from './room-api';
 import { ROOM_SOCKET_FACTORY } from './room-socket';
@@ -84,6 +87,7 @@ export class RoomConnection {
   private readonly _restored = signal(false);
   private readonly _notice = signal<ConnectionNotice | null>(null);
   private readonly _clockOffset = signal(0);
+  private readonly _agenda = signal<HeldAgenda | null>(null);
 
   readonly status = this._status.asReadonly();
   readonly state = this._state.asReadonly();
@@ -96,6 +100,11 @@ export class RoomConnection {
   /** Non-fatal errors that did not answer a command (e.g. `rate_limited`). */
   readonly notice = this._notice.asReadonly();
   readonly connected = computed(() => this._status() === 'connected');
+  /**
+   * The agenda held between snapshots (F02-AC16). Kept in step with every accepted `state` through
+   * `mergeAgenda`; on a reconnect the first state of the new socket carries the agenda and replaces it.
+   */
+  readonly agenda = this._agenda.asReadonly();
 
   private roomId: string | null = null;
   private intent: JoinIntent = { kind: 'rejoin' };
@@ -110,6 +119,9 @@ export class RoomConnection {
   private noticeCounter = 0;
   private everConnected = false;
   private readonly pending = new Map<string, Pending>();
+  /** `story` replies waiting for their `ack`, by command id. */
+  private readonly storyReplies = new Map<string, StoryDetail>();
+  private resyncInFlight = false;
   private reconnectTimer: ReturnType<typeof setTimeout> | undefined;
   private indicatorTimer: ReturnType<typeof setTimeout> | undefined;
   private pingTimer: ReturnType<typeof setInterval> | undefined;
@@ -159,6 +171,8 @@ export class RoomConnection {
     this._notice.set(null);
     this._indicator.set('connected');
     this._restored.set(false);
+    this._agenda.set(null);
+    this.resyncInFlight = false;
   }
 
   /** Server clock estimate (epoch ms), for `canClaimFacilitator`. */
@@ -171,13 +185,41 @@ export class RoomConnection {
    * `CommandError` on an error reply or when not connected. Nothing is queued while disconnected.
    */
   send(command: CommandInput): Promise<number> {
-    if (this._status() !== 'connected' || !this.socket || !this.joinedOnSocket) {
-      return Promise.reject(new CommandError('disconnected'));
+    return this.dispatch(command).result;
+  }
+
+  /** Read a story's description and final round (`get_story`). Any joined participant may. */
+  async getStory(storyId: string): Promise<StoryDetail> {
+    const { id, result } = this.dispatch({ type: 'get_story', storyId });
+    try {
+      await result;
+      const story = this.storyReplies.get(id);
+      if (!story) throw new CommandError('internal_error');
+      return story;
+    } finally {
+      this.storyReplies.delete(id);
     }
+  }
+
+  /** Ask for a full snapshot including the agenda (after `stale_round`, `unknown_story` or a gap). */
+  resync(): void {
+    if (this.resyncInFlight) return;
+    this.resyncInFlight = true;
+    this.send({ type: 'resync' })
+      .catch(() => undefined)
+      .finally(() => {
+        this.resyncInFlight = false;
+      });
+  }
+
+  private dispatch(command: CommandInput): { id: string; result: Promise<number> } {
     const id = `c${++this.commandCounter}-${Math.random().toString(36).slice(2, 8)}`;
+    if (this._status() !== 'connected' || !this.socket || !this.joinedOnSocket) {
+      return { id, result: Promise.reject(new CommandError('disconnected')) };
+    }
     // The union minus `id` plus `id` is a CommandMessage; TypeScript cannot see through the distributive Omit.
     const message = { ...command, id } as ClientMessage;
-    return new Promise<number>((resolve, reject) => {
+    const result = new Promise<number>((resolve, reject) => {
       this.pending.set(id, { resolve, reject });
       try {
         this.socket?.send(serializeMessage(message));
@@ -186,6 +228,7 @@ export class RoomConnection {
         reject(new CommandError('disconnected'));
       }
     });
+    return { id, result };
   }
 
   // ---- socket lifecycle ----
@@ -272,6 +315,9 @@ export class RoomConnection {
       case 'state':
         this.applyState(message.state);
         return;
+      case 'story':
+        this.storyReplies.set(message.id, message.story);
+        return;
       case 'ack': {
         const p = this.pending.get(message.id);
         if (p) {
@@ -290,10 +336,15 @@ export class RoomConnection {
     const current = this._state();
     // Ignore older snapshots; the first snapshot of a connection always wins (it is the resync).
     if (!this.awaitingFirstState && current && next.version < current.version) return;
+    // After a (re)connect the held agenda is dropped: the first snapshot carries it (F02-AC16).
+    const held = this.awaitingFirstState ? null : this._agenda();
     this.awaitingFirstState = false;
     this._clockOffset.set(next.serverTime - Date.now());
     this._state.set(next);
+    const merged = mergeAgenda(held, next.stories);
+    if (merged.held) this._agenda.set(merged.held);
     this.markConnected();
+    if (merged.resync) this.resync();
   }
 
   private markConnected(): void {
@@ -416,6 +467,7 @@ export class RoomConnection {
   private rejectPending(): void {
     const all = [...this.pending.values()];
     this.pending.clear();
+    this.storyReplies.clear();
     for (const p of all) p.reject(new CommandError('disconnected'));
   }
 }

@@ -1,7 +1,8 @@
 import { env, exports } from 'cloudflare:workers';
-import { parseServerMessage } from '@pokr/shared';
+import { mergeAgenda, parseServerMessage } from '@pokr/shared';
 import type {
   ClientMessage,
+  HeldAgenda,
   CreateRoomRequest,
   CreateRoomResponse,
   RoomState,
@@ -41,6 +42,10 @@ export class Client {
   closed: { code: number; reason: string } | null = null;
   participantId = '';
   token = '';
+  /** The agenda this client holds, kept in sync with the real client rule (`mergeAgenda`). */
+  held: HeldAgenda | null = null;
+  /** Times the real client rule would have asked for a resync; always 0 on a healthy connection. */
+  resyncs = 0;
   private cmd = 0;
   static readonly all: Client[] = [];
 
@@ -51,6 +56,11 @@ export class Client {
       const parsed = parseServerMessage(raw);
       if (!parsed.ok) throw new Error(`server sent an invalid frame: ${parsed.message}`);
       this.messages.push(parsed.message);
+      if (parsed.message.type === 'state') {
+        const merged = mergeAgenda(this.held, parsed.message.state.stories);
+        this.held = merged.held;
+        if (merged.resync) this.resyncs++;
+      }
       if (parsed.message.type === 'joined') {
         this.participantId = parsed.message.participantId;
         if (parsed.message.token) this.token = parsed.message.token;
@@ -146,6 +156,24 @@ export class Client {
     return this.closed;
   }
 
+  /** Agenda rows as this client sees them. */
+  get rows() {
+    return this.held?.rows ?? [];
+  }
+  get titles(): string[] {
+    return this.rows.map((r) => r.title);
+  }
+
+  /** The raw `state` frames received so far, parsed as JSON (to inspect which keys travelled). */
+  stateFrames(): { stories: Record<string, unknown>; version: number; bytes: number }[] {
+    return this.frames
+      .filter((f) => f.startsWith('{"type":"state"'))
+      .map((f) => {
+        const j = JSON.parse(f) as { state: { stories: Record<string, unknown>; version: number } };
+        return { stories: j.state.stories, version: j.state.version, bytes: f.length };
+      });
+  }
+
   get state(): RoomState | undefined {
     for (let i = this.messages.length - 1; i >= 0; i--) {
       const m = this.messages[i]!;
@@ -196,3 +224,47 @@ export async function setup(settings: CreateRoomRequest['settings'] = {}) {
   fac.token = room.token;
   return { room, id: room.roomId, fac };
 }
+
+/** Story helpers for tests. */
+export async function addStory(c: Client, title: string, extra: Record<string, unknown> = {}) {
+  const r = await c.cmd_({ type: 'add_story', title, ...extra });
+  if (r.type !== 'ack') throw new Error(`add_story failed: ${JSON.stringify(r)}`);
+  return r.storyIds![0]!;
+}
+
+export async function addStories(c: Client, ...titles: string[]): Promise<string[]> {
+  const r = await c.cmd_({ type: 'add_stories', text: titles.join('\n') });
+  if (r.type !== 'ack') throw new Error(`add_stories failed: ${JSON.stringify(r)}`);
+  return r.storyIds ?? [];
+}
+
+export async function seedStories(roomId: string, body: Record<string, unknown>) {
+  return api(`/api/__test/rooms/${roomId}/stories`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+}
+
+export async function storageReport(roomId: string) {
+  const res = await api(`/api/__test/rooms/${roomId}/storage`);
+  if (res.status !== 200) throw new Error(`storage failed: ${res.status}`);
+  return (await res.json()) as {
+    entries: { key: string; bytes: number }[];
+    totalBytes: number;
+    finalRounds: {
+      storyId: string;
+      finalRound: {
+        number: number;
+        votes: { participantId: string; name: string | null; card: string }[];
+      };
+    }[];
+  };
+}
+
+/** A facilitator in a fresh Story list room. */
+export const setupStories = (settings: CreateRoomRequest['settings'] = {}) =>
+  setup({ storySource: 'stories', ...settings });
+
+/** Round id (`round.number`) as the client sees it. */
+export const roundOf = (c: Client): number => c.state!.round.number;

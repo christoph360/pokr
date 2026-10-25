@@ -24,6 +24,7 @@ export const STRINGS = {
     customDeckHint:
       'Separate cards with commas, for example: 1, 2, 4, 8. ? and ☕ are added for you.',
     controlMode: 'Who can reveal and reset',
+    storySource: 'What you estimate',
     autoReveal: 'Reveal automatically when everyone has voted',
     facilitatorVotes: 'I vote too',
     create: 'Create room',
@@ -46,6 +47,10 @@ export const STRINGS = {
     facilitator: 'Facilitator only',
     everyone: 'Everyone',
   },
+  storySources: {
+    topic: 'Free topic',
+    stories: 'Story list',
+  },
   roles: {
     voter: 'Voter',
     observer: 'Observer',
@@ -65,6 +70,7 @@ export const STRINGS = {
     customUnique: 'Cards must be unique, ignoring upper and lower case.',
     customSpecial: '? and ☕ are added automatically, so leave them out.',
     invalid: 'This value is not valid.',
+    tooManyBytes: 'This text is too long. Shorten it.',
   },
 
   join: {
@@ -201,8 +207,11 @@ export const STRINGS = {
     controlMode: 'Who can reveal and reset',
     autoReveal: 'Reveal automatically when everyone has voted',
     facilitatorVotes: 'Facilitator votes',
+    storySource: 'What you estimate',
+    storySourceHint: 'Switching keeps your stories and estimates, and starts a fresh round.',
     nonFacilitatorNote: 'Only the facilitator can change these settings.',
-    summaryLine: (deck: string, mode: string) => `Deck: ${deck}. Reveal and reset: ${mode}.`,
+    summaryLine: (deck: string, mode: string, source: string) =>
+      `Deck: ${deck}. Reveal and reset: ${mode}. Estimating: ${source}.`,
   },
 
   confirm: {
@@ -212,7 +221,172 @@ export const STRINGS = {
     resetTitle: 'Reset the round?',
     resetBody: 'Votes that have not been revealed will be lost.',
     resetOk: 'Reset round',
+    sourceTitle: 'Change what you estimate?',
+    sourceBody: 'Switching discards the current round. Your stories and estimates are kept.',
+    sourceOk: 'Switch and reset',
     cancel: 'Cancel',
+  },
+
+  stories: {
+    // agenda panel
+    agendaHeading: 'Agenda',
+    agendaToggle: (progress: string) => `Agenda (${progress})`,
+    agendaList: 'Stories',
+    agendaHint: 'Use the arrow keys to move between story actions.',
+    noStoriesYet: 'No stories yet',
+    noStoriesHint: 'Add stories to estimate them one after another.',
+    progress: (estimated: number, outOf: number, skipped: number) => {
+      if (outOf === 0) return `No stories left to estimate, ${skipped} skipped`;
+      return skipped > 0
+        ? `${estimated} of ${outOf} estimated, ${skipped} skipped`
+        : `${estimated} of ${outOf} estimated`;
+    },
+    sum: (value: string) => `Sum of estimates: ${value}`,
+    excluded: (n: number) => `${n} estimate${n === 1 ? '' : 's'} not counted`,
+    count: (n: number, max: number) => `${n} of ${max} stories`,
+    limitReached: (max: number) => `The agenda is full (${max} of ${max} stories).`,
+    status: {
+      pending: 'Pending',
+      active: 'Active',
+      estimated: 'Estimated',
+      skipped: 'Skipped',
+    },
+    revoting: 'Re-voting',
+    estimateLabel: 'Estimate',
+    estimateValue: (value: string) => `Estimate ${value}`,
+    // row actions
+    rowActions: (title: string) => `Actions for ${title}`,
+    dragHandle: 'Drag to reorder',
+    select: 'Vote',
+    revote: 'Re-vote',
+    selectFor: (title: string) => `Vote on ${title}`,
+    revoteFor: (title: string) => `Re-vote ${title}`,
+    skip: 'Skip',
+    skipFor: (title: string) => `Skip ${title}`,
+    restore: 'Restore',
+    restoreFor: (title: string) => `Restore ${title} to pending`,
+    edit: 'Edit',
+    editFor: (title: string) => `Edit ${title}`,
+    remove: 'Delete',
+    removeFor: (title: string) => `Delete ${title}`,
+    moveTopFor: (title: string) => `Move ${title} to the top`,
+    moveUpFor: (title: string) => `Move ${title} up`,
+    moveDownFor: (title: string) => `Move ${title} down`,
+    moveBottomFor: (title: string) => `Move ${title} to the bottom`,
+    historyFor: (title: string) => `Last round of ${title}`,
+    detailsFor: (title: string) => `Details of ${title}`,
+    history: 'Last round',
+    details: 'Details',
+    // add / edit
+    add: 'Add story',
+    addHeading: 'Add a story',
+    addSubmit: 'Add story',
+    editHeading: 'Edit story',
+    editSubmit: 'Save story',
+    titleLabel: 'Title',
+    descriptionLabel: 'Description (optional, Markdown)',
+    descriptionHint: 'Markdown is supported: lists, emphasis, code and links.',
+    linkLabel: 'Link (optional)',
+    linkHint: 'An http or https address, for example https://tracker.example/issue/12',
+    cancel: 'Cancel',
+    loadingStory: 'Loading story…',
+    // bulk
+    bulkOpen: 'Add several',
+    bulkHeading: 'Add several stories',
+    bulkLabel: 'Stories, one title per line',
+    bulkHint: 'Blank lines are ignored. List markers such as "- " are kept as typed.',
+    bulkSubmit: (n: number) => `Add ${n} ${n === 1 ? 'story' : 'stories'}`,
+    bulkSubmitEmpty: 'Add stories',
+    bulkPreview: (n: number) => `${n} ${n === 1 ? 'story' : 'stories'} will be added.`,
+    bulkNone: 'Paste or type at least one title.',
+    bulkTooMany: (max: number) => `Add at most ${max} stories at a time.`,
+    bulkRoom: (room: number) =>
+      room <= 0
+        ? 'The agenda is full.'
+        : `The agenda has room for ${room} more ${room === 1 ? 'story' : 'stories'}.`,
+    bulkLineTooLong: (line: number, max: number) =>
+      `Line ${line} is too long. Use at most ${max} characters.`,
+    bulkLineForbidden: (line: number) => `Line ${line} contains control characters.`,
+    bulkLineInvalid: (line: number) => `Line ${line} is not valid.`,
+    bulkErrors: 'Fix these lines',
+    // validation
+    titleRequired: 'Enter a title.',
+    linkInvalid: 'Enter a full http or https address, without spaces or a user name.',
+    // active story
+    activeHeading: 'Active story',
+    noActive: 'No story selected',
+    noActiveFacilitator: 'Select a story in the agenda, or use Next story.',
+    noActiveOthers: 'Waiting for the facilitator to select a story.',
+    noActiveNoStories: 'Add a story to the agenda to start estimating.',
+    next: 'Next story',
+    nextNone: 'All stories are estimated or skipped',
+    nextEmpty: 'There are no stories to estimate yet',
+    activeSkip: 'Skip story',
+    activeSkipNext: 'Skip and next',
+    showMore: 'Show more',
+    showLess: 'Show less',
+    storyLink: 'Story link',
+    opensInNewTab: '(opens in new tab)',
+    // final estimate
+    acceptHeading: 'Final estimate',
+    acceptOpen: 'Accept an estimate',
+    acceptChange: 'Change the estimate',
+    acceptedValue: (value: string) => `Accepted estimate: ${value}`,
+    acceptDialog: 'Accept a final estimate',
+    acceptHelp: 'Choose the estimate for this story.',
+    quickPicks: 'Suggestions',
+    consensusPick: (card: string) => `Consensus ${card}`,
+    medianPick: (card: string) => `Median ${card}`,
+    consensusAndMedianPick: (card: string) => `Consensus and median ${card}`,
+    allCards: 'All cards',
+    acceptConfirm: 'Accept estimate',
+    acceptConfirmValue: (card: string) => `Accept ${card}`,
+    acceptCardLabel: (card: string) => `Estimate ${card}`,
+    acceptNothingChosen: 'Choose an estimate first.',
+    // last round
+    historyHeading: (title: string) => `Last round: ${title}`,
+    detailsHeading: (title: string) => `Story: ${title}`,
+    historyEstimate: (value: string) => `Final estimate: ${value}`,
+    historyNoVotes: 'Nobody voted in that round.',
+    historyVotes: 'Votes',
+    historyLoading: 'Loading…',
+    historyFailed: 'Could not load the story. Try again.',
+    removedParticipant: 'Removed participant',
+    descriptionHeading: 'Description',
+    noDescription: 'No description.',
+    close: 'Close',
+    // confirmations
+    confirmCancel: 'Cancel',
+    confirmSelectTitle: 'Switch to another story?',
+    confirmSelectBody:
+      'The current round has votes that are not saved as an estimate. They will be discarded.',
+    confirmSelectOk: 'Discard votes and switch',
+    confirmNextTitle: 'Go to the next story?',
+    confirmNextOk: 'Discard votes and continue',
+    confirmSkipTitle: 'Skip this story?',
+    confirmSkipOk: 'Discard votes and skip',
+    confirmDeleteTitle: 'Delete this story?',
+    confirmDeleteOk: 'Delete story',
+    deleteEstimated: (title: string, estimate: string) =>
+      `"${title}" has the estimate ${estimate}. Deleting it removes the estimate and cannot be undone.`,
+    deleteActive: (title: string) =>
+      `"${title}" is being voted on. Deleting it discards the current round and cannot be undone.`,
+    deleteEstimatedActive: (title: string, estimate: string) =>
+      `"${title}" has the estimate ${estimate} and is being voted on. Deleting it removes the estimate, discards the current round, and cannot be undone.`,
+    // announcements
+    nowVoting: (title: string) => `Now voting: ${title}`,
+    nowIdle: 'No story selected.',
+    estimateAccepted: (title: string, estimate: string) => `${title} estimated ${estimate}`,
+    movedTo: (title: string, position: number, total: number) =>
+      `${title} moved to position ${position} of ${total}`,
+    alreadyFirst: (title: string) => `${title} is already first`,
+    alreadyLast: (title: string) => `${title} is already last`,
+    added: (n: number) => (n === 1 ? 'Story added.' : `${n} stories added.`),
+    deleted: (title: string) => `Deleted ${title}`,
+    skipped: (title: string) => `Skipped ${title}`,
+    restored: (title: string) => `Restored ${title}`,
+    editedFailed: 'The story was not saved.',
+    reorderFailed: 'The new order could not be saved. The agenda was refreshed.',
   },
 
   connection: {
@@ -239,6 +413,14 @@ export const STRINGS = {
     claim_not_available: 'The facilitator role cannot be claimed right now.',
     internal_error: 'Something went wrong on the server. Please try again.',
     disconnected: 'You are not connected, so that action was not sent.',
+    story_limit_reached: 'The agenda is full. A room holds at most 200 stories.',
+    unknown_story: 'That story no longer exists. The agenda was refreshed.',
+    no_active_story: 'No story is selected. Select a story first.',
+    no_next_story: 'All stories are estimated or skipped.',
+    invalid_story_state: 'That is not possible for this story in its current state.',
+    wrong_story_source: 'That does not apply to the current story source.',
+    stale_round: 'The round changed in the meantime. The agenda was refreshed, so try again.',
+    round_not_revealed: 'Reveal the votes before accepting an estimate.',
   } as Record<string, string>,
 } as const;
 

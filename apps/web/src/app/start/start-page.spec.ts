@@ -1,3 +1,4 @@
+import { getByRole } from '../testing/dom';
 import { TestBed } from '@angular/core/testing';
 import { provideRouter, Router } from '@angular/router';
 import { RoomApi } from '../core/room-api';
@@ -145,5 +146,47 @@ describe('StartPage', () => {
     await type('start-name', 'Alex');
     await submit();
     expect(q('start-error')?.textContent).toContain('12 seconds');
+  });
+});
+
+describe('StartPage story source (F02-AC1)', () => {
+  it('F02-AC1 offers Free topic (default) and Story list and sends the choice', async () => {
+    localStorage.clear();
+    const created: { settings: { storySource?: string } }[] = [];
+    TestBed.configureTestingModule({
+      providers: [
+        provideRouter([]),
+        {
+          provide: RoomApi,
+          useValue: {
+            createRoom: (req: { settings: { storySource?: string } }) => {
+              created.push(req);
+              return Promise.resolve({
+                ok: true,
+                data: { roomId: 'abcdefghjkmnpqrs', participantId: 'p1', token: 't'.repeat(40) },
+              });
+            },
+          },
+        },
+      ],
+    });
+    vi.spyOn(TestBed.inject(Router), 'navigate').mockResolvedValue(true);
+    const fixture = TestBed.createComponent(StartPage);
+    fixture.detectChanges();
+    const el = fixture.nativeElement as HTMLElement;
+    const select = getByRole(el, 'combobox', 'What you estimate') as HTMLSelectElement;
+    expect(Array.from(select.options).map((o) => o.textContent?.trim())).toEqual([
+      'Free topic',
+      'Story list',
+    ]);
+    expect(select.value).toBe('topic');
+    const name = getByRole(el, 'textbox', 'Your name') as HTMLInputElement;
+    name.value = 'Alex';
+    name.dispatchEvent(new Event('input'));
+    select.value = 'stories';
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+    getByRole(el, 'button', 'Create room').click();
+    await fixture.whenStable();
+    expect(created[0]?.settings.storySource).toBe('stories');
   });
 });
