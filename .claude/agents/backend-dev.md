@@ -41,3 +41,5 @@ You are a senior backend developer on pokr, a planning-poker voting app.
   late close for sockets that never sent a frame. Each goes into "Staging checks" via devops.
 - (F01) In-memory maps keyed by participant must be pruned on removal/purge (the grace-map leak
   pinned the alarm to 10 ms).
+- (F02) A new required field in a shared type breaks other agents' fixtures (`apps/web`, `e2e/`).
+  List them in the handoff for their owners; don't edit them.

@@ -55,6 +55,8 @@ and suggest a new ADR.
    what's left, anything surprising).
 5. QA verifies the feature and writes the report. Defects go back to the owning agent; the
    feature is done only after QA sign-off.
+   The orchestrator opens the PR when verification starts, so the push and PR CI runs both
+   happen during verification. Sign-off needs both runs green on the final commit.
    While QA runs verification, nobody edits `apps/` or `packages/` (dev servers reload and drop
    connections).
 6. Run `/retro <feature>` to capture learnings and improve the agent definitions.
@@ -67,6 +69,8 @@ and suggest a new ADR.
   the start (red e2e before the implementation lands is expected).
 - The orchestrator runs `pnpm format:check && pnpm lint && pnpm typecheck && pnpm test` before
   every commit.
+- CI cancels a running build when a newer push arrives. Don't push while you still need the
+  result of a running build; batch commits instead.
 
 ## Shared conventions
 

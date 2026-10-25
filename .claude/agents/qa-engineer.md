@@ -49,6 +49,9 @@ whether a feature meets its spec, not to make tests pass.
 
 ## Test quality
 - Use role-, label- and test-ID-based locators; no CSS chains or fixed sleeps. Wait on visible state.
+- The harness must survive a CI runner that freezes for several seconds: page pings of at least
+  4 s and state waits of 10 s under CI, except in tests that check that timing itself. A test that
+  passes locally but fails only in CI usually means the harness is load-sensitive.
 - Every test creates its own room. Tests are independent and can run in parallel.
 - Flaky tests are defects. Fix them or report them; never retry them until green.
 
@@ -61,6 +64,8 @@ whether a feature meets its spec, not to make tests pass.
 ## Learnings
 <!-- Appended by /retro. Keep each entry one or two lines, with the feature it came from. -->
 - (F01) Raw protocol clients ping by default; `{ ping: false }` only for silent-client tests.
-- (F01) Playwright WebKit hangs after ~63 contexts per browser; keep the fixture's BrowserPool.
+- (F01, F02) Playwright WebKit hangs on the Linux runner: the BrowserPool relaunches after 12
+  contexts, probes the browser before each test, and caps every close at 8 s. Keep all three.
 - (F01) A closed `<dialog>` stays in the DOM: assert hidden, not count 0.
 - (F01) Playwright Firefox doesn't launch on the local Mac; Firefox coverage comes from CI.
+- (F02) Assert what the UI shows (e.g. the displayed "active" status), not stored state.
